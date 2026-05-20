@@ -26,14 +26,16 @@ def _chunks(items: list, size: int) -> Iterable[list]:
 
 
 def upsert_products(client: Client, products: list[dict], source: str) -> int:
-    """products テーブルへ upsert。jan_code を主キーに last_seen / 名前更新も行う"""
+    """products テーブルへ upsert。jan_code を主キーに last_seen / 名前更新も行う。
+    同じJANが複数回現れる場合は最初の1件のみ採用（バッチ内重複でON CONFLICT発火を防ぐ）。
+    """
     today = date.today().isoformat()
-    rows = []
+    by_jan: dict[str, dict] = {}
     for p in products:
         jan = p.get("jan_code")
-        if not jan:
+        if not jan or jan in by_jan:
             continue
-        rows.append({
+        by_jan[jan] = {
             "jan_code": jan,
             "name": p.get("name"),
             "image_url": p.get("image_url"),
@@ -41,13 +43,14 @@ def upsert_products(client: Client, products: list[dict], source: str) -> int:
             "category": p.get("category"),
             "detail_url": p.get("detail_url"),
             "last_seen": today,
-        })
+        }
+    rows = list(by_jan.values())
 
     inserted = 0
     for chunk in _chunks(rows, BATCH_SIZE):
         client.table("products").upsert(chunk, on_conflict="jan_code").execute()
         inserted += len(chunk)
-    logger.info("upserted %d products (source=%s)", inserted, source)
+    logger.info("upserted %d products (source=%s, dedup from %d)", inserted, source, len(products))
     return inserted
 
 
@@ -57,7 +60,21 @@ def insert_price_history(client: Client, products: list[dict], source: str) -> i
     rudeya: condition フィールドがあるのでそのまま使用
     """
     today = date.today().isoformat()
-    rows = []
+    by_key: dict[tuple, dict] = {}
+
+    def _put(jan: str, cond: str, price: int, note: str | None):
+        key = (jan, source, cond, today)
+        if key in by_key:
+            return
+        by_key[key] = {
+            "jan_code": jan,
+            "source": source,
+            "condition": cond,
+            "scraped_date": today,
+            "price": price,
+            "note": note,
+        }
+
     for p in products:
         jan = p.get("jan_code")
         if not jan:
@@ -67,31 +84,16 @@ def insert_price_history(client: Client, products: list[dict], source: str) -> i
             for o in p.get("deduction_options", [])
         ) or p.get("note")
 
-        # kaitorishouten 形式: prices に new/used
         if "prices" in p and isinstance(p["prices"], dict):
             for cond, price in p["prices"].items():
                 if price is None:
                     continue
-                rows.append({
-                    "jan_code": jan,
-                    "source": source,
-                    "condition": cond,
-                    "scraped_date": today,
-                    "price": price,
-                    "note": note,
-                })
-        # rudeya 形式: condition + price
+                _put(jan, cond, price, note)
         elif "price" in p and p["price"] is not None:
             cond = "new" if p.get("condition") == "新品" else "used"
-            rows.append({
-                "jan_code": jan,
-                "source": source,
-                "condition": cond,
-                "scraped_date": today,
-                "price": p["price"],
-                "note": note,
-            })
+            _put(jan, cond, p["price"], note)
 
+    rows = list(by_key.values())
     inserted = 0
     for chunk in _chunks(rows, BATCH_SIZE):
         client.table("price_history").upsert(
