@@ -1,0 +1,59 @@
+name: DB Connection Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - run: pip install supabase==2.9.1
+
+      - name: Test Supabase connection
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python <<'PY'
+          import os
+          from datetime import date
+          from supabase import create_client
+
+          url = os.environ.get("SUPABASE_URL", "")
+          key = os.environ.get("SUPABASE_KEY", "")
+          print(f"URL length: {len(url)}")
+          print(f"KEY length: {len(key)}")
+          print(f"KEY prefix: {key[:8]}...")
+
+          if not url or not key:
+              print("ERROR: env not set")
+              exit(1)
+
+          client = create_client(url, key)
+
+          # テストレコードを upsert → select → delete
+          test_jan = "0000000000000"
+          client.table("products").upsert({
+              "jan_code": test_jan,
+              "name": "TEST PRODUCT",
+              "source": "test",
+              "last_seen": date.today().isoformat(),
+          }).execute()
+          print("upsert OK")
+
+          rows = client.table("products").select("*").eq("jan_code", test_jan).execute().data
+          print(f"select OK: {rows}")
+
+          client.table("products").delete().eq("jan_code", test_jan).execute()
+          print("delete OK")
+          print("✅ DB connection works!")
+          PY
