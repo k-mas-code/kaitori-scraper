@@ -22,8 +22,9 @@ BASE_URL = "https://www.kaitorishouten-co.jp"
 CATEGORIES = ["keitai", "kaden", "nitiyouhin"]
 
 OUTPUT_DIR = Path(__file__).parent / "output"
-REQUEST_INTERVAL = 0.8
+REQUEST_INTERVAL = 1.5
 MAX_RETRIES = 3
+RATE_LIMIT_BACKOFF = 30  # 503 のときの待機秒数
 
 HEADERS = {
     "User-Agent": (
@@ -55,6 +56,11 @@ def fetch(session: requests.Session, url: str, referer: str | None = None) -> st
             if resp.status_code == 500:
                 # ページ範囲外と判断
                 return None
+            if resp.status_code == 503:
+                # レート制限 → 長めに待ってリトライ
+                logger.warning("503 rate-limited, sleep %ds: %s", RATE_LIMIT_BACKOFF, url)
+                time.sleep(RATE_LIMIT_BACKOFF)
+                continue
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as e:
