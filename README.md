@@ -1,4 +1,4 @@
-# ec-scraper
+# kaitori-scraper
 
 中古買取サイトの商品・買取価格を毎日スクレイピングし、Supabase に蓄積する。
 
