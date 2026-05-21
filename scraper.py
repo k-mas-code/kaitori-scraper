@@ -230,10 +230,15 @@ def scrape_category(session: requests.Session, category: str) -> list[dict]:
 
     bucket: dict[str, dict] = {}
 
-    # kaitorishouten には商品詳細ページが無いため、大カテゴリのトップURLを代替で保存
+    # kaitorishouten には商品詳細ページが無いが、トップ ?name=JAN でJAN検索結果に
+    # 飛べるため、各商品の detail_url にはそれを採用する
     def _attach_url(items):
         for it in items:
-            it.setdefault("detail_url", top_url)
+            jan = it.get("jan_code")
+            if jan:
+                it.setdefault("detail_url", f"{BASE_URL}/?name={jan}")
+            else:
+                it.setdefault("detail_url", top_url)
         return items
 
     # 1. 「すべて」

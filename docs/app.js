@@ -418,9 +418,9 @@ async function fillCardPrices(card, jan, quantity = 1) {
 
   const trs = rows.map((r) => {
     let url = r.detail_url || fallbackUrlBySource.get(r.source);
-    // kaitorishouten は商品個別ページが無いため、自前の中継ページ経由でJAN検索結果へ
+    // 買取商店は商品個別ページ無し → トップの ?name= でJAN検索結果に直接飛べる
     if (r.source === 'kaitorishouten') {
-      url = `./ks-redirect.html?jan=${encodeURIComponent(jan)}`;
+      url = `https://www.kaitorishouten-co.jp/?name=${encodeURIComponent(jan)}`;
     }
     const linkBtn = url
       ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
