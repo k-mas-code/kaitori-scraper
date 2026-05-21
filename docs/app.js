@@ -417,7 +417,11 @@ async function fillCardPrices(card, jan, quantity = 1) {
   cardState.set(jan, { quantity, maxBySource });
 
   const trs = rows.map((r) => {
-    const url = r.detail_url || fallbackUrlBySource.get(r.source);
+    let url = r.detail_url || fallbackUrlBySource.get(r.source);
+    // kaitorishouten は商品個別ページが無いため、自前の中継ページ経由でJAN検索結果へ
+    if (r.source === 'kaitorishouten') {
+      url = `./ks-redirect.html?jan=${encodeURIComponent(jan)}`;
+    }
     const linkBtn = url
       ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
             class="text-blue-600 hover:underline text-xs">元ページ ↗</a>`
