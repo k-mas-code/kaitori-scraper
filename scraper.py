@@ -230,15 +230,25 @@ def scrape_category(session: requests.Session, category: str) -> list[dict]:
 
     bucket: dict[str, dict] = {}
 
+    # kaitorishouten には商品詳細ページが無いため、大カテゴリのトップURLを代替で保存
+    def _attach_url(items):
+        for it in items:
+            it.setdefault("detail_url", top_url)
+        return items
+
     # 1. 「すべて」
     if all_endpoint:
-        items = crawl_paginated(session, BASE_URL, all_endpoint, top_url, extract_card_products)
+        items = _attach_url(
+            crawl_paginated(session, BASE_URL, all_endpoint, top_url, extract_card_products)
+        )
         added = merge_unique(bucket, items)
         logger.info("  [all] %d items, +%d new (total %d)", len(items), added, len(bucket))
 
     # 2. 各サブカテゴリ
     for ep in sub_endpoints:
-        items = crawl_paginated(session, BASE_URL, ep, top_url, extract_table_products)
+        items = _attach_url(
+            crawl_paginated(session, BASE_URL, ep, top_url, extract_table_products)
+        )
         added = merge_unique(bucket, items)
         logger.info("  [%s] %d items, +%d new (total %d)", ep, len(items), added, len(bucket))
 

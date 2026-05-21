@@ -23,11 +23,12 @@ create index if not exists idx_products_category on products(category);
 -- 1商品が new/used 別価格を持つ場合は別レコードとして保存
 create table if not exists price_history (
   jan_code      text not null,
-  source        text not null,           -- 'kaitorishouten' or 'rudeya'
+  source        text not null,           -- 'kaitorishouten' / 'rudeya' / 'kaitoriwiki'
   condition     text not null,           -- 'new' or 'used'
   scraped_date  date not null,
   price         int,
   note          text,                    -- 備考（減額条件等）
+  detail_url    text,                    -- スクレイプ時点の商品/カテゴリページURL
   primary key (jan_code, source, condition, scraped_date)
 );
 

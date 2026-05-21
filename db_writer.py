@@ -62,7 +62,7 @@ def insert_price_history(client: Client, products: list[dict], source: str) -> i
     today = date.today().isoformat()
     by_key: dict[tuple, dict] = {}
 
-    def _put(jan: str, cond: str, price: int, note: str | None):
+    def _put(jan: str, cond: str, price: int, note: str | None, detail_url: str | None):
         key = (jan, source, cond, today)
         if key in by_key:
             return
@@ -73,6 +73,7 @@ def insert_price_history(client: Client, products: list[dict], source: str) -> i
             "scraped_date": today,
             "price": price,
             "note": note,
+            "detail_url": detail_url,
         }
 
     for p in products:
@@ -83,15 +84,16 @@ def insert_price_history(client: Client, products: list[dict], source: str) -> i
             f"{o['label']}{o['amount']:+d}円"
             for o in p.get("deduction_options", [])
         ) or p.get("note")
+        detail_url = p.get("detail_url")
 
         if "prices" in p and isinstance(p["prices"], dict):
             for cond, price in p["prices"].items():
                 if price is None:
                     continue
-                _put(jan, cond, price, note)
+                _put(jan, cond, price, note, detail_url)
         elif "price" in p and p["price"] is not None:
             cond = "new" if p.get("condition") == "新品" else "used"
-            _put(jan, cond, p["price"], note)
+            _put(jan, cond, p["price"], note, detail_url)
 
     rows = list(by_key.values())
     inserted = 0

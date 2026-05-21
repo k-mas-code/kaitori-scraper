@@ -179,33 +179,38 @@ async function selectProduct(product) {
   await renderPrices(product.jan_code);
 }
 
-async function fetchPricesAndProducts(jan) {
-  // 価格履歴 (全ソース・全状態・全日付) + 各ソースのdetail_url を並行取得
-  const [pricesRes, productsRes] = await Promise.all([
-    supabase
-      .from('price_history')
-      .select('source,condition,price,scraped_date,note')
-      .eq('jan_code', jan)
-      .order('scraped_date', { ascending: false }),
-    supabase
-      .from('products')
-      .select('source,detail_url')
-      .eq('jan_code', jan),
-  ]);
-  return { prices: pricesRes, products: productsRes };
+async function fetchPriceHistory(jan) {
+  // 価格履歴 (全ソース・全状態・全日付) を1クエリで取得
+  // detail_url も price_history に保存されているので追加 join 不要
+  return supabase
+    .from('price_history')
+    .select('source,condition,price,scraped_date,note,detail_url')
+    .eq('jan_code', jan)
+    .order('scraped_date', { ascending: false });
+}
+
+// products から source 別 detail_url を fallback として取得 (旧データ救済用)
+async function fetchProductsFallback(jan) {
+  return supabase
+    .from('products')
+    .select('source,detail_url')
+    .eq('jan_code', jan);
 }
 
 async function renderPrices(jan) {
-  const { prices, products } = await fetchPricesAndProducts(jan);
+  const [prices, productsFallback] = await Promise.all([
+    fetchPriceHistory(jan),
+    fetchProductsFallback(jan),
+  ]);
   if (prices.error) {
     $status.innerHTML = `<span class="text-red-600">価格取得エラー: ${prices.error.message}</span>`;
     return;
   }
 
-  // source ごとの detail_url マップ
-  const urlBySource = new Map();
-  for (const row of products.data || []) {
-    if (row.detail_url) urlBySource.set(row.source, row.detail_url);
+  // 旧データ用 fallback: products テーブルから source -> detail_url
+  const fallbackUrlBySource = new Map();
+  for (const row of productsFallback.data || []) {
+    if (row.detail_url) fallbackUrlBySource.set(row.source, row.detail_url);
   }
 
   // (source, condition) ごとに最新の1件のみ残す
@@ -227,7 +232,7 @@ async function renderPrices(jan) {
   }
 
   $tbody.innerHTML = rows.map((r) => {
-    const url = urlBySource.get(r.source);
+    const url = r.detail_url || fallbackUrlBySource.get(r.source);
     const linkBtn = url
       ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
             class="text-blue-600 hover:underline text-xs">元ページ ↗</a>`
