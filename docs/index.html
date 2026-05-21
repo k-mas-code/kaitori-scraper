@@ -60,39 +60,16 @@
     <!-- ステータス表示 -->
     <div id="status" class="text-sm text-slate-500 py-3"></div>
 
-    <!-- 結果 -->
-    <section id="result" class="hidden">
-      <div id="product-card" class="bg-white rounded-lg shadow p-4 mb-4 flex gap-3 items-start">
-        <img id="product-image" alt="" class="w-20 h-20 object-contain rounded bg-slate-100 shrink-0" onerror="this.style.visibility='hidden'">
-        <div class="min-w-0 flex-1">
-          <h2 id="product-name" class="font-semibold leading-tight"></h2>
-          <p class="text-xs text-slate-500 mt-1">
-            JAN: <span id="product-jan" class="font-mono"></span>
-          </p>
-          <p class="text-xs text-slate-500">
-            カテゴリ: <span id="product-category"></span>
-          </p>
-        </div>
+    <!-- 検索結果ヒストリー -->
+    <section id="result-area">
+      <div id="result-toolbar" class="hidden flex items-center justify-between mb-3">
+        <span id="history-count" class="text-sm text-slate-500"></span>
+        <button id="clear-history-btn"
+                class="text-sm text-red-600 hover:text-red-700 hover:underline">
+          🗑 履歴を全削除
+        </button>
       </div>
-
-      <h3 class="font-semibold text-slate-700 mb-2">買取価格（高い順）</h3>
-      <div class="bg-white rounded-lg shadow overflow-hidden">
-        <table class="w-full text-sm">
-          <thead class="bg-slate-100 text-slate-600 text-left">
-            <tr>
-              <th class="px-3 py-2 font-medium">買取店</th>
-              <th class="px-3 py-2 font-medium">状態</th>
-              <th class="px-3 py-2 font-medium text-right">価格</th>
-              <th class="px-3 py-2 font-medium hidden sm:table-cell">取得日</th>
-              <th class="px-3 py-2 font-medium"></th>
-            </tr>
-          </thead>
-          <tbody id="price-tbody" class="divide-y divide-slate-100"></tbody>
-        </table>
-        <div id="price-empty" class="px-3 py-4 text-sm text-slate-500 text-center hidden">
-          価格データがまだ無いか、削除されました。
-        </div>
-      </div>
+      <div id="result-list" class="space-y-4"></div>
     </section>
 
     <footer class="mt-10 text-xs text-slate-400 text-center">
