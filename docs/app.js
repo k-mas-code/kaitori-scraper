@@ -24,7 +24,9 @@ const EXTERNAL_SHOPS = [
   {
     key: 'ichoume',
     label: '買取一丁目',
-    urlBuilder: (jan) => `https://www.1-chome.com/index/${encodeURIComponent(jan)}`,
+    // SPAでURLからJANを渡せないため、検索ページに飛ばしJANを自動コピー
+    urlBuilder: () => 'https://www.1-chome.com/searchResult',
+    copyJan: true,
   },
   {
     key: 'mobichi',
