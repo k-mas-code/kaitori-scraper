@@ -8,6 +8,28 @@ const SOURCE_LABELS = {
   kaitoriwiki: '買取wiki',
 };
 const CONDITION_LABELS = { new: '新品', used: '中古' };
+
+// 価格DBには無いがJAN検索リンクだけ提供する外部買取店
+// { label, urlBuilder, copyJan: true ならクリック時にJANをクリップボードへコピー }
+const EXTERNAL_SHOPS = [
+  {
+    key: 'morimori',
+    label: '森森買取',
+    urlBuilder: (jan) => `https://www.morimori-kaitori.jp/search/${encodeURIComponent(jan)}`,
+  },
+  {
+    key: 'ichoume',
+    label: '買取一丁目',
+    urlBuilder: (jan) => `https://www.1-chome.com/index/${encodeURIComponent(jan)}`,
+  },
+  {
+    key: 'mobichi',
+    label: 'モバイル一番',
+    urlBuilder: () => 'https://www.mobile-ichiban.com/',
+    copyJan: true,
+    note: 'トップを開きJANをコピーします。検索欄にペーストしてください。',
+  },
+];
 const DEBOUNCE_MS = 250;
 const MAX_SUGGESTIONS = 20;
 const STORAGE_KEY = 'kw_search_history_v1';
@@ -174,6 +196,23 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// data-external-jan 付きリンクは新タブで開きつつ、JAN をクリップボードへコピー
+document.addEventListener('click', async (e) => {
+  const link = e.target.closest('a.external-link[data-external-jan]');
+  if (!link) return;
+  const jan = link.dataset.externalJan;
+  if (!jan) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(jan);
+    } else {
+      legacyCopy(jan);
+    }
+  } catch (err) {
+    console.warn('external JAN copy failed:', err);
+  }
+});
+
 function legacyCopy(text) {
   const ta = document.createElement('textarea');
   ta.value = text;
@@ -332,6 +371,22 @@ function createCard(product, quantity = 1) {
 
     <div class="price-section">
       <div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center loading">価格を取得中</div>
+    </div>
+
+    <div class="external-shops mt-3 text-xs">
+      <div class="text-slate-500 mb-1">他の買取店でも探す:</div>
+      <div class="flex flex-wrap gap-1.5">
+        ${EXTERNAL_SHOPS.map((shop) => {
+          const u = shop.urlBuilder(product.jan_code);
+          const attr = shop.copyJan
+            ? `data-external-jan="${escapeHtml(product.jan_code)}" data-external-note="${escapeHtml(shop.note || '')}"`
+            : '';
+          return `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer"
+                     class="external-link inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 hover:border-blue-500 text-slate-700"
+                     title="${escapeHtml(shop.label)}でJAN ${escapeHtml(product.jan_code)} を検索" ${attr}>
+                    ${escapeHtml(shop.label)} ↗</a>`;
+        }).join('')}
+      </div>
     </div>
   `;
 
