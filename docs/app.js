@@ -154,6 +154,48 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// JANコピー (event delegation)
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.jan-copy');
+  if (!btn) return;
+  e.preventDefault();
+  const jan = btn.dataset.jan;
+  if (!jan) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(jan);
+    } else {
+      legacyCopy(jan);
+    }
+    showCopyFeedback(btn, '✓ コピー済');
+  } catch (err) {
+    console.warn('JAN copy failed:', err);
+    showCopyFeedback(btn, '✗ 失敗', 'text-red-600');
+  }
+});
+
+function legacyCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } finally { ta.remove(); }
+}
+
+function showCopyFeedback(btn, label, extraClass = 'text-emerald-600') {
+  const origText = btn.textContent;
+  const origClasses = btn.className;
+  btn.textContent = label;
+  btn.className = `${origClasses.replace(/text-(blue|red|emerald)-\d+/g, '')} ${extraClass}`.trim();
+  setTimeout(() => {
+    btn.textContent = origText;
+    btn.className = origClasses;
+  }, 1500);
+}
+
 function updateActiveItem(items) {
   items.forEach((li, i) => li.classList.toggle('active', i === activeIndex));
   if (activeIndex >= 0) items[activeIndex].scrollIntoView({ block: 'nearest' });
@@ -263,8 +305,12 @@ function createCard(product, quantity = 1) {
       ${imgHtml}
       <div class="min-w-0 flex-1">
         <h2 class="font-semibold leading-tight">${escapeHtml(product.name || '(名前なし)')}</h2>
-        <p class="text-xs text-slate-500 mt-1">
-          JAN: <span class="font-mono">${escapeHtml(product.jan_code)}</span>
+        <p class="text-xs text-slate-500 mt-1 flex items-center gap-1 flex-wrap">
+          <span>JAN:</span>
+          <span class="font-mono">${escapeHtml(product.jan_code)}</span>
+          <button type="button" class="jan-copy text-blue-600 hover:underline"
+                  data-jan="${escapeHtml(product.jan_code)}"
+                  title="JANをコピー" aria-label="JANをコピー">📋 コピー</button>
         </p>
         <p class="text-xs text-slate-500">
           カテゴリ: ${escapeHtml(product.category || '—')}
