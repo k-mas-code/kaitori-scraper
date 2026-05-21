@@ -231,6 +231,33 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// 外部店の手入力価格 → cardState 反映 & 永続化
+document.addEventListener('input', (e) => {
+  const $el = e.target.closest('.external-price-input');
+  if (!$el) return;
+  const card = $el.closest('article.result-card');
+  if (!card) return;
+  const jan = card.dataset.jan;
+  const source = $el.dataset.source;
+  const raw = parseInt($el.value, 10);
+  const val = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 9999999) : null;
+
+  const state = cardState.get(jan);
+  if (state) {
+    if (val) state.maxBySource.set(source, val);
+    else state.maxBySource.delete(source);
+  }
+  updateHistoryExternalPrice(jan, source, val);
+
+  // 該当行の data-unit と 小計を更新
+  const $sub = card.querySelector(`.card-subtotal[data-source="${cssEscape(source)}"]`);
+  if ($sub) {
+    $sub.dataset.unit = val || 0;
+    $sub.textContent = val ? `小計 ¥${(val * (state?.quantity || 1)).toLocaleString()}` : '';
+  }
+  recalcSummary();
+});
+
 function legacyCopy(text) {
   const ta = document.createElement('textarea');
   ta.value = text;
@@ -390,36 +417,6 @@ function createCard(product, quantity = 1, externalPrices = {}) {
     <div class="price-section">
       <div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center loading">価格を取得中</div>
     </div>
-
-    <div class="external-shops mt-3">
-      <div class="text-xs text-slate-500 mb-1.5">
-        他の買取店で価格を確認 → 手入力で総額比較に追加
-      </div>
-      <div class="space-y-1.5">
-        ${EXTERNAL_SHOPS.map((shop) => {
-          const u = shop.urlBuilder(product.jan_code);
-          const attr = shop.copyJan
-            ? `data-external-jan="${escapeHtml(product.jan_code)}"`
-            : '';
-          const v = Number(externalPrices?.[shop.key]) || '';
-          return `
-            <div class="flex items-center gap-2 text-sm">
-              <a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer"
-                 class="external-link w-32 text-blue-600 hover:underline text-xs truncate"
-                 title="${escapeHtml(shop.label)}でJAN ${escapeHtml(product.jan_code)} を検索" ${attr}>
-                ${escapeHtml(shop.label)} ↗
-              </a>
-              <input type="number" inputmode="numeric"
-                     class="external-price-input w-28 text-right px-2 py-1 border border-slate-300 rounded outline-none focus:border-blue-500 tabular-nums text-sm"
-                     data-source="${escapeHtml(shop.key)}"
-                     placeholder="価格を入力" min="0" max="9999999"
-                     value="${v}">
-              <span class="text-xs text-slate-400">円</span>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    </div>
   `;
 
   card.querySelector('.card-remove').addEventListener('click', () => {
@@ -449,24 +446,10 @@ function createCard(product, quantity = 1, externalPrices = {}) {
     $qty.dispatchEvent(new Event('input'));
   });
 
-  // 外部店の手入力価格 → cardState.maxBySource に反映
-  card.querySelectorAll('.external-price-input').forEach(($el) => {
-    $el.addEventListener('input', () => {
-      const source = $el.dataset.source;
-      const raw = parseInt($el.value, 10);
-      const val = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 9999999) : null;
-      const state = cardState.get(product.jan_code);
-      if (state) {
-        if (val) state.maxBySource.set(source, val);
-        else state.maxBySource.delete(source);
-      }
-      updateHistoryExternalPrice(product.jan_code, source, val);
-      recalcSummary();
-    });
-  });
-
   return card;
 }
+
+const DB_SOURCES = ['kaitorishouten', 'rudeya', 'kaitoriwiki'];
 
 async function fillCardPrices(card, jan, quantity = 1, externalPrices = {}) {
   const $section = card.querySelector('.price-section');
@@ -492,73 +475,75 @@ async function fillCardPrices(card, jan, quantity = 1, externalPrices = {}) {
     if (row.detail_url) fallbackUrlBySource.set(row.source, row.detail_url);
   }
 
-  // (source, condition) ごとに最新の1件
+  // (source, condition) ごとに最新行
   const latestByKey = new Map();
   for (const row of prices.data || []) {
     const key = `${row.source}|${row.condition}`;
     if (!latestByKey.has(key)) latestByKey.set(key, row);
   }
 
-  // 価格降順
-  const rows = Array.from(latestByKey.values())
-    .filter((r) => r.price != null)
-    .sort((a, b) => b.price - a.price);
-
-  // 店ごとの最高価格 (condition問わず) を集計してサマリーの基礎にする
-  const maxBySource = new Map();
-  for (const r of rows) {
-    const cur = maxBySource.get(r.source) || 0;
-    if (r.price > cur) maxBySource.set(r.source, r.price);
+  // sourceごとに最高価格行 (condition問わず最大値)
+  const dbBySource = new Map();
+  for (const row of latestByKey.values()) {
+    if (row.price == null) continue;
+    const cur = dbBySource.get(row.source);
+    if (!cur || row.price > cur.price) {
+      dbBySource.set(row.source, {
+        price: row.price,
+        scraped_date: row.scraped_date,
+        detail_url: row.detail_url,
+      });
+    }
   }
-  // 手入力の外部店価格を上乗せ
+
+  // maxBySource: DB店 + 外部店 (手入力)
+  const maxBySource = new Map();
+  for (const [src, info] of dbBySource) maxBySource.set(src, info.price);
   for (const [src, p] of Object.entries(externalPrices || {})) {
     const n = Number(p);
     if (Number.isFinite(n) && n > 0) maxBySource.set(src, n);
   }
   cardState.set(jan, { quantity, maxBySource });
 
-  if (rows.length === 0) {
-    $section.innerHTML = `<div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center">DB上の価格データはまだ無いか、削除されました。</div>`;
-    recalcSummary();
-    return;
-  }
+  $section.innerHTML = renderPriceTable({
+    jan, quantity, dbBySource, fallbackUrlBySource, externalPrices,
+  });
 
-  const trs = rows.map((r) => {
-    let url = r.detail_url || fallbackUrlBySource.get(r.source);
-    // 買取商店は商品個別ページ無し → トップの ?name= でJAN検索結果に直接飛べる
-    if (r.source === 'kaitorishouten') {
+  recalcSummary();
+}
+
+function renderPriceTable({ jan, quantity, dbBySource, fallbackUrlBySource, externalPrices }) {
+  const dbRows = DB_SOURCES.map((src) => {
+    const info = dbBySource.get(src);
+    if (!info) return null;
+    let url = info.detail_url || fallbackUrlBySource.get(src);
+    if (src === 'kaitorishouten') {
       url = `https://www.kaitorishouten-co.jp/?name=${encodeURIComponent(jan)}`;
     }
-    const linkBtn = url
-      ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
-            class="text-blue-600 hover:underline text-xs">元ページ ↗</a>`
-      : '';
-    const isBest = maxBySource.get(r.source) === r.price;
-    const bestMark = isBest ? '<span class="text-emerald-600" title="この店での最高値">★</span>' : '';
-    const subtotalHtml = isBest
-      ? `<div class="card-subtotal text-xs text-emerald-700 mt-0.5" data-source="${escapeHtml(r.source)}" data-unit="${r.price}">小計 ¥${(r.price * quantity).toLocaleString()}</div>`
-      : '';
-    return `
-      <tr>
-        <td class="px-3 py-2 font-medium">${escapeHtml(SOURCE_LABELS[r.source] || r.source)} ${bestMark}</td>
-        <td class="px-3 py-2 text-slate-600">${escapeHtml(CONDITION_LABELS[r.condition] || r.condition)}</td>
-        <td class="px-3 py-2 text-right">
-          <div class="font-semibold tabular-nums">¥${r.price.toLocaleString()}</div>
-          ${subtotalHtml}
-        </td>
-        <td class="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell">${escapeHtml(r.scraped_date)}</td>
-        <td class="px-3 py-2 text-right">${linkBtn}</td>
-      </tr>
-    `;
-  }).join('');
+    return {
+      src, price: info.price, scraped_date: info.scraped_date, url, manual: false,
+    };
+  }).filter(Boolean);
 
-  $section.innerHTML = `
+  const externalRows = EXTERNAL_SHOPS.map((shop) => ({
+    src: shop.key,
+    price: Number(externalPrices?.[shop.key]) || null,
+    scraped_date: null,
+    url: shop.urlBuilder(jan),
+    manual: true,
+    copyJan: !!shop.copyJan,
+    jan,
+  }));
+
+  const rows = [...dbRows, ...externalRows];
+
+  const trs = rows.map((r) => priceRowHtml(r, quantity)).join('');
+  return `
     <div class="bg-slate-50 rounded overflow-hidden">
       <table class="w-full text-sm">
         <thead class="bg-slate-100 text-slate-600 text-left">
           <tr>
             <th class="px-3 py-2 font-medium">買取店</th>
-            <th class="px-3 py-2 font-medium">状態</th>
             <th class="px-3 py-2 font-medium text-right">価格</th>
             <th class="px-3 py-2 font-medium hidden sm:table-cell">取得日</th>
             <th class="px-3 py-2 font-medium"></th>
@@ -568,18 +553,59 @@ async function fillCardPrices(card, jan, quantity = 1, externalPrices = {}) {
       </table>
     </div>
   `;
-
-  recalcSummary();
 }
 
-// 数量変更時、各カードの「小計」表示を再計算
+function priceRowHtml(r, quantity) {
+  const label = escapeHtml(SOURCE_LABELS[r.src] || r.src);
+  const dateCell = r.scraped_date
+    ? escapeHtml(r.scraped_date)
+    : '<span class="text-slate-300">—</span>';
+
+  const copyAttr = r.copyJan && r.jan
+    ? ` data-external-jan="${escapeHtml(r.jan)}"`
+    : '';
+  const linkBtn = `<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer"${copyAttr}
+                      class="external-link text-blue-600 hover:underline text-xs">元ページ ↗</a>`;
+
+  let priceCell;
+  if (r.manual) {
+    const v = r.price ? String(r.price) : '';
+    const subtotal = r.price ? `小計 ¥${(r.price * quantity).toLocaleString()}` : '';
+    priceCell = `
+      <div class="flex items-center justify-end gap-1">
+        <input type="number" inputmode="numeric"
+               class="external-price-input w-24 text-right px-2 py-1 border border-slate-300 rounded outline-none focus:border-blue-500 tabular-nums"
+               data-source="${escapeHtml(r.src)}"
+               placeholder="入力" min="0" max="9999999" value="${escapeHtml(v)}">
+        <span class="text-xs text-slate-400">円</span>
+      </div>
+      <div class="card-subtotal text-xs text-emerald-700 mt-0.5 text-right" data-source="${escapeHtml(r.src)}" data-unit="${r.price || 0}">${subtotal}</div>
+    `;
+  } else {
+    priceCell = `
+      <div class="font-semibold tabular-nums">¥${r.price.toLocaleString()}</div>
+      <div class="card-subtotal text-xs text-emerald-700 mt-0.5" data-source="${escapeHtml(r.src)}" data-unit="${r.price}">小計 ¥${(r.price * quantity).toLocaleString()}</div>
+    `;
+  }
+
+  return `
+    <tr>
+      <td class="px-3 py-2 font-medium">${label}</td>
+      <td class="px-3 py-2 text-right">${priceCell}</td>
+      <td class="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell">${dateCell}</td>
+      <td class="px-3 py-2 text-right">${linkBtn}</td>
+    </tr>
+  `;
+}
+
+// 数量変更時に各「小計」表示を更新
 function updateCardSubtotals(card) {
   const jan = card.dataset.jan;
   const state = cardState.get(jan);
   if (!state) return;
   card.querySelectorAll('.card-subtotal').forEach(($el) => {
     const unit = parseInt($el.dataset.unit, 10) || 0;
-    $el.textContent = `小計 ¥${(unit * state.quantity).toLocaleString()}`;
+    $el.textContent = unit > 0 ? `小計 ¥${(unit * state.quantity).toLocaleString()}` : '';
   });
 }
 
