@@ -10,6 +10,13 @@ GitHub Actions (毎日12:00 JST)
   ├─ rudeya_scraper.py      → Supabase (products / price_history)
   ├─ kaitoriwiki_scraper.py → Supabase (products / price_history)
   └─ output/*.json          → Artifact (30日保持)
+
+GitHub Pages (docs/)
+  └─ Vanilla JS + Tailwind CDN
+      ├─ index.html  検索UI (検索 + 候補 + 価格テーブル + カメラスキャナ)
+      ├─ app.js      Supabase JS SDK 経由で products / price_history を読み取り
+      ├─ scanner.js  html5-qrcode (JANバーコード読み取り)
+      └─ config.js   SUPABASE_URL + anon public key (RLSでSELECTのみ許可)
 ```
 
 | 項目 | 値 |
@@ -96,16 +103,17 @@ python scraper.py
 
 ## 進捗 / 次のステップ
 
-### 完了 (フェーズ1)
-- ✅ 2サイトのスクレイパー実装
-- ✅ Supabase スキーマ + RLS
+### 完了 (フェーズ1 + フェーズ2の一部)
+- ✅ 3サイトのスクレイパー実装 (kaitorishouten / rudeya / kaitoriwiki)
+- ✅ Supabase スキーマ + RLS (anon SELECT のみ許可)
 - ✅ GitHub Actions cron 自動実行
-- ✅ DB upsert 動作確認 (11,592 products / 11,517 prices)
+- ✅ DB upsert 動作確認
 - ✅ ローカルcron停止（重複防止）
+- ✅ ダッシュボード = GitHub Pages の検索UI (`docs/`)
 
 ### 未着手 (フェーズ2候補)
 - 価格変動アラート（前日比 -X% 以上で通知）
 - Google Sheets 連携で最新版を共有
-- ダッシュボード（Supabase Studio or 別UI）
+- 価格推移グラフ (現在は最新1点のみ表示)
 - 503 エラーへのより洗練された対策（指数バックオフ、ジッタ）
 - 別の買取サイトの追加

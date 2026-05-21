@@ -8,14 +8,39 @@
 |---|---|---|
 | 買取商店 (kaitorishouten-co.jp) | `scraper.py` | `output/kaitorishouten_{YYYYMMDD}.json` |
 | 買取ルデヤ (kaitori-rudeya.com) | `rudeya_scraper.py` | `output/rudeya_{YYYYMMDD}.json` |
+| 買取wiki (kaitori.wiki) | `kaitoriwiki_scraper.py` | `output/kaitoriwiki_{YYYYMMDD}.json` |
 
 ## アーキテクチャ
 
 ```
 GitHub Actions (毎日12:00 JST)
-  ├─ scraper.py        → Supabase (products / price_history)
-  ├─ rudeya_scraper.py → Supabase (products / price_history)
-  └─ output/*.json     → Artifact (30日保持)
+  ├─ scraper.py             → Supabase (products / price_history)
+  ├─ rudeya_scraper.py      → Supabase (products / price_history)
+  ├─ kaitoriwiki_scraper.py → Supabase (products / price_history)
+  └─ output/*.json          → Artifact (30日保持)
+
+GitHub Pages (静的サイト)
+  └─ docs/                  → 検索UI (JAN/商品名 → 各店買取価格を降順表示)
+```
+
+## フロントエンド (検索UI)
+
+`docs/` に Vanilla JS の静的サイトを置き、GitHub Pages で配信する。
+
+- 公開URL: <https://k-mas-code.github.io/kaitori-scraper/>
+- JANコード or 商品名 (部分一致) で検索
+- 入力中に候補リストを動的表示 (autocomplete)
+- 選択した商品の買取店3社の最新価格を降順表示
+- スマホブラウザでカメラ起動 → JANバーコード読み取りで自動検索
+
+### 必要設定
+1. Supabase RLS: `db/schema.sql` の `anon read *` ポリシーを SQL Editor で実行
+2. `docs/config.js` の `SUPABASE_ANON_KEY` を Project Settings > API > `anon public` キーで差し替え
+
+### ローカル開発
+```bash
+cd docs && python -m http.server 8000
+# http://localhost:8000
 ```
 
 ## セットアップ

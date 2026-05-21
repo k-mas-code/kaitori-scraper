@@ -1,0 +1,36 @@
+/* html5-qrcode のデフォルトUI調整 */
+#reader video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover;
+}
+#reader__dashboard_section,
+#reader__header_message,
+#reader__filescan_input,
+#reader__camera_selection,
+#reader__dashboard_section_csr button {
+  display: none !important;
+}
+
+/* 候補リストのホバー */
+#suggestions li {
+  cursor: pointer;
+}
+#suggestions li:hover,
+#suggestions li.active {
+  background-color: rgb(241 245 249);
+}
+
+/* ロード中の点滅 */
+.loading::after {
+  content: '';
+  display: inline-block;
+  width: 1em;
+  animation: dots 1s steps(4, end) infinite;
+}
+@keyframes dots {
+  0%, 20% { content: ''; }
+  40%     { content: '.'; }
+  60%     { content: '..'; }
+  80%,100% { content: '...'; }
+}

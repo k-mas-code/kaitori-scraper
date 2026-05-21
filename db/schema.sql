@@ -37,11 +37,17 @@ create index if not exists idx_price_history_jan on price_history(jan_code);
 -- ============================================================
 -- Row Level Security
 -- service_role キー (GitHub Actions で使用) は RLS をバイパスするため
--- そのまま読み書き可能。anon / authenticated からのアクセスは
--- ポリシーを作らないので全て拒否される。
+-- そのまま読み書き可能。
+-- フロントエンド (anon key) には SELECT のみ許可。
+-- INSERT/UPDATE/DELETE はポリシー無しで全て拒否される。
 -- ============================================================
 alter table products enable row level security;
 alter table price_history enable row level security;
+
+create policy "anon read products"
+  on products for select to anon using (true);
+create policy "anon read price_history"
+  on price_history for select to anon using (true);
 
 -- ============================================================
 -- 便利ビュー: 最新の価格一覧
