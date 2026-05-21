@@ -70,21 +70,26 @@
         </button>
       </div>
 
-      <!-- 店舗別 合計買取額サマリー -->
+      <!-- 店舗別 合計買取額サマリー (デフォルト折りたたみ) -->
       <div id="summary-card" class="hidden bg-white rounded-lg shadow mb-4 overflow-hidden">
-        <div class="px-4 py-2 bg-emerald-600 text-white text-sm font-semibold">
-          🏆 買取店ごとの合計買取額（高い順）
+        <button id="summary-toggle" type="button"
+                class="w-full text-left px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold flex items-center justify-between"
+                aria-expanded="false" aria-controls="summary-body">
+          <span>🏆 買取店ごとの合計買取額（高い順）<span id="summary-best" class="ml-2 font-normal opacity-90"></span></span>
+          <span id="summary-toggle-icon" class="transform transition-transform inline-block">▶</span>
+        </button>
+        <div id="summary-body" class="hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-100 text-slate-600 text-left">
+              <tr>
+                <th class="px-3 py-2 font-medium">買取店</th>
+                <th class="px-3 py-2 font-medium text-center">対象点数</th>
+                <th class="px-3 py-2 font-medium text-right">合計</th>
+              </tr>
+            </thead>
+            <tbody id="summary-tbody" class="divide-y divide-slate-100"></tbody>
+          </table>
         </div>
-        <table class="w-full text-sm">
-          <thead class="bg-slate-100 text-slate-600 text-left">
-            <tr>
-              <th class="px-3 py-2 font-medium">買取店</th>
-              <th class="px-3 py-2 font-medium text-center">対象点数</th>
-              <th class="px-3 py-2 font-medium text-right">合計</th>
-            </tr>
-          </thead>
-          <tbody id="summary-tbody" class="divide-y divide-slate-100"></tbody>
-        </table>
       </div>
 
       <div id="result-list" class="space-y-4"></div>

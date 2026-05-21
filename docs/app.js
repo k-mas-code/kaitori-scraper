@@ -66,6 +66,11 @@ const $historyCount = document.getElementById('history-count');
 const $clearHistoryBtn = document.getElementById('clear-history-btn');
 const $summaryCard = document.getElementById('summary-card');
 const $summaryTbody = document.getElementById('summary-tbody');
+const $summaryToggle = document.getElementById('summary-toggle');
+const $summaryToggleIcon = document.getElementById('summary-toggle-icon');
+const $summaryBody = document.getElementById('summary-body');
+const $summaryBest = document.getElementById('summary-best');
+const SUMMARY_OPEN_KEY = 'kw_summary_open_v1';
 const $scanBtn = document.getElementById('scan-btn');
 const $scannerModal = document.getElementById('scanner-modal');
 const $scannerClose = document.getElementById('scanner-close');
@@ -630,10 +635,13 @@ function recalcSummary() {
   if (totals.size === 0) {
     $summaryCard.classList.add('hidden');
     $summaryTbody.innerHTML = '';
+    $summaryBest.textContent = '';
     return;
   }
   const sorted = [...totals.entries()].sort((a, b) => b[1].total - a[1].total);
   const best = sorted[0][1].total;
+  const [bestSrc, bestRow] = sorted[0];
+  $summaryBest.textContent = `(1位: ${SOURCE_LABELS[bestSrc] || bestSrc} ¥${bestRow.total.toLocaleString()})`;
   $summaryTbody.innerHTML = sorted.map(([src, { total, items }], i) => {
     const isBest = total === best && i === 0;
     const bestBadge = isBest ? '<span class="ml-2 text-xs bg-emerald-600 text-white rounded px-1.5 py-0.5">BEST</span>' : '';
@@ -647,6 +655,32 @@ function recalcSummary() {
   }).join('');
   $summaryCard.classList.remove('hidden');
 }
+
+// サマリーの開閉
+function setSummaryOpen(open) {
+  if (open) {
+    $summaryBody.classList.remove('hidden');
+    $summaryToggleIcon.textContent = '▼';
+    $summaryToggle.setAttribute('aria-expanded', 'true');
+  } else {
+    $summaryBody.classList.add('hidden');
+    $summaryToggleIcon.textContent = '▶';
+    $summaryToggle.setAttribute('aria-expanded', 'false');
+  }
+  try { localStorage.setItem(SUMMARY_OPEN_KEY, open ? '1' : '0'); } catch {}
+}
+
+$summaryToggle.addEventListener('click', () => {
+  const isOpen = !$summaryBody.classList.contains('hidden');
+  setSummaryOpen(!isOpen);
+});
+
+// 初期状態: LocalStorageに保存された開閉状態を復元 (なければ閉じ)
+(function initSummaryOpenState() {
+  let saved = null;
+  try { saved = localStorage.getItem(SUMMARY_OPEN_KEY); } catch {}
+  setSummaryOpen(saved === '1');
+})();
 
 // ---------- 履歴全削除 ----------
 $clearHistoryBtn.addEventListener('click', () => {
