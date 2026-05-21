@@ -69,6 +69,24 @@
           🗑 履歴を全削除
         </button>
       </div>
+
+      <!-- 店舗別 合計買取額サマリー -->
+      <div id="summary-card" class="hidden bg-white rounded-lg shadow mb-4 overflow-hidden">
+        <div class="px-4 py-2 bg-emerald-600 text-white text-sm font-semibold">
+          🏆 買取店ごとの合計買取額（高い順）
+        </div>
+        <table class="w-full text-sm">
+          <thead class="bg-slate-100 text-slate-600 text-left">
+            <tr>
+              <th class="px-3 py-2 font-medium">買取店</th>
+              <th class="px-3 py-2 font-medium text-center">対象点数</th>
+              <th class="px-3 py-2 font-medium text-right">合計</th>
+            </tr>
+          </thead>
+          <tbody id="summary-tbody" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+
       <div id="result-list" class="space-y-4"></div>
     </section>
 

@@ -33,10 +33,16 @@ const $resultList = document.getElementById('result-list');
 const $resultToolbar = document.getElementById('result-toolbar');
 const $historyCount = document.getElementById('history-count');
 const $clearHistoryBtn = document.getElementById('clear-history-btn');
+const $summaryCard = document.getElementById('summary-card');
+const $summaryTbody = document.getElementById('summary-tbody');
 const $scanBtn = document.getElementById('scan-btn');
 const $scannerModal = document.getElementById('scanner-modal');
 const $scannerClose = document.getElementById('scanner-close');
 const $scannerError = document.getElementById('scanner-error');
+
+// ---------- 集計用ステート ----------
+// jan_code -> { quantity, maxBySource: Map<source, price> }
+const cardState = new Map();
 
 // ---------- 履歴ストレージ ----------
 function loadHistory() {
@@ -58,16 +64,24 @@ function saveHistory(items) {
   }
 }
 
-function addToHistory(product) {
+function addToHistory(product, quantity = 1) {
   const entry = {
     jan_code: product.jan_code,
     name: product.name || '',
     image_url: product.image_url || '',
     category: product.category || '',
+    quantity,
   };
   const items = [entry, ...loadHistory().filter((p) => p.jan_code !== entry.jan_code)];
   saveHistory(items);
   return items;
+}
+
+function updateHistoryQuantity(jan, quantity) {
+  const items = loadHistory().map((p) =>
+    p.jan_code === jan ? { ...p, quantity } : p
+  );
+  saveHistory(items);
 }
 
 function removeFromHistory(jan) {
@@ -208,31 +222,34 @@ function renderSuggestions(items) {
 }
 
 // ---------- 商品選択 → カード追加 ----------
-async function selectProduct(product, { persist = true, scroll = true } = {}) {
+async function selectProduct(product, { persist = true, scroll = true, quantity = 1 } = {}) {
   hideSuggestions();
   $input.value = '';
   $clear.classList.add('hidden');
   $status.textContent = '';
 
-  // 既存の同JANカードを削除
+  // 既存の同JANカードを削除 (関連する state もクリア)
   const existing = $resultList.querySelector(`[data-jan="${cssEscape(product.jan_code)}"]`);
-  if (existing) existing.remove();
+  if (existing) {
+    existing.remove();
+    cardState.delete(product.jan_code);
+  }
 
   // 履歴に保存 (LocalStorage)
-  if (persist) addToHistory(product);
+  if (persist) addToHistory(product, quantity);
 
   // カード生成して先頭に挿入
-  const card = createCard(product);
+  const card = createCard(product, quantity);
   $resultList.prepend(card);
   updateToolbar();
 
   if (scroll) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // 価格テーブルを埋める (非同期)
-  fillCardPrices(card, product.jan_code);
+  fillCardPrices(card, product.jan_code, quantity);
 }
 
-function createCard(product) {
+function createCard(product, quantity = 1) {
   const card = document.createElement('article');
   card.className = 'result-card bg-white rounded-lg shadow p-4';
   card.dataset.jan = product.jan_code;
@@ -256,6 +273,17 @@ function createCard(product) {
       <button class="card-remove text-slate-400 hover:text-red-600 text-xl leading-none shrink-0 px-2 -mr-2"
               aria-label="この履歴を削除" title="この履歴を削除">✕</button>
     </div>
+
+    <div class="flex items-center gap-2 mb-3 text-sm">
+      <label class="text-slate-600" for="qty-${escapeHtml(product.jan_code)}">数量:</label>
+      <button type="button" class="qty-dec w-8 h-8 rounded border border-slate-300 hover:bg-slate-100" aria-label="減らす">−</button>
+      <input id="qty-${escapeHtml(product.jan_code)}" type="number" inputmode="numeric"
+             class="quantity-input w-16 text-center px-2 py-1 border border-slate-300 rounded outline-none focus:border-blue-500"
+             value="${Number(quantity) || 1}" min="1" max="999">
+      <button type="button" class="qty-inc w-8 h-8 rounded border border-slate-300 hover:bg-slate-100" aria-label="増やす">＋</button>
+      <span class="text-xs text-slate-400 ml-1">点</span>
+    </div>
+
     <div class="price-section">
       <div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center loading">価格を取得中</div>
     </div>
@@ -263,14 +291,35 @@ function createCard(product) {
 
   card.querySelector('.card-remove').addEventListener('click', () => {
     card.remove();
+    cardState.delete(product.jan_code);
     removeFromHistory(product.jan_code);
     updateToolbar();
+    recalcSummary();
+  });
+
+  const $qty = card.querySelector('.quantity-input');
+  $qty.addEventListener('input', () => {
+    const v = Math.max(1, Math.min(999, parseInt($qty.value, 10) || 1));
+    if (String(v) !== $qty.value) $qty.value = String(v);
+    const state = cardState.get(product.jan_code);
+    if (state) state.quantity = v;
+    updateHistoryQuantity(product.jan_code, v);
+    updateCardSubtotals(card);
+    recalcSummary();
+  });
+  card.querySelector('.qty-dec').addEventListener('click', () => {
+    $qty.value = Math.max(1, (parseInt($qty.value, 10) || 1) - 1);
+    $qty.dispatchEvent(new Event('input'));
+  });
+  card.querySelector('.qty-inc').addEventListener('click', () => {
+    $qty.value = Math.min(999, (parseInt($qty.value, 10) || 1) + 1);
+    $qty.dispatchEvent(new Event('input'));
   });
 
   return card;
 }
 
-async function fillCardPrices(card, jan) {
+async function fillCardPrices(card, jan, quantity = 1) {
   const $section = card.querySelector('.price-section');
   const [prices, productsFallback] = await Promise.all([
     supabase
@@ -308,8 +357,18 @@ async function fillCardPrices(card, jan) {
 
   if (rows.length === 0) {
     $section.innerHTML = `<div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center">価格データがまだ無いか、削除されました。</div>`;
+    cardState.set(jan, { quantity, maxBySource: new Map() });
+    recalcSummary();
     return;
   }
+
+  // 店ごとの最高価格 (condition問わず) を集計してサマリーの基礎にする
+  const maxBySource = new Map();
+  for (const r of rows) {
+    const cur = maxBySource.get(r.source) || 0;
+    if (r.price > cur) maxBySource.set(r.source, r.price);
+  }
+  cardState.set(jan, { quantity, maxBySource });
 
   const trs = rows.map((r) => {
     const url = r.detail_url || fallbackUrlBySource.get(r.source);
@@ -317,11 +376,19 @@ async function fillCardPrices(card, jan) {
       ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer"
             class="text-blue-600 hover:underline text-xs">元ページ ↗</a>`
       : '';
+    const isBest = maxBySource.get(r.source) === r.price;
+    const bestMark = isBest ? '<span class="text-emerald-600" title="この店での最高値">★</span>' : '';
+    const subtotalHtml = isBest
+      ? `<div class="card-subtotal text-xs text-emerald-700 mt-0.5" data-source="${escapeHtml(r.source)}" data-unit="${r.price}">小計 ¥${(r.price * quantity).toLocaleString()}</div>`
+      : '';
     return `
       <tr>
-        <td class="px-3 py-2 font-medium">${escapeHtml(SOURCE_LABELS[r.source] || r.source)}</td>
+        <td class="px-3 py-2 font-medium">${escapeHtml(SOURCE_LABELS[r.source] || r.source)} ${bestMark}</td>
         <td class="px-3 py-2 text-slate-600">${escapeHtml(CONDITION_LABELS[r.condition] || r.condition)}</td>
-        <td class="px-3 py-2 text-right font-semibold tabular-nums">¥${r.price.toLocaleString()}</td>
+        <td class="px-3 py-2 text-right">
+          <div class="font-semibold tabular-nums">¥${r.price.toLocaleString()}</div>
+          ${subtotalHtml}
+        </td>
         <td class="px-3 py-2 text-slate-500 text-xs hidden sm:table-cell">${escapeHtml(r.scraped_date)}</td>
         <td class="px-3 py-2 text-right">${linkBtn}</td>
       </tr>
@@ -344,6 +411,52 @@ async function fillCardPrices(card, jan) {
       </table>
     </div>
   `;
+
+  recalcSummary();
+}
+
+// 数量変更時、各カードの「小計」表示を再計算
+function updateCardSubtotals(card) {
+  const jan = card.dataset.jan;
+  const state = cardState.get(jan);
+  if (!state) return;
+  card.querySelectorAll('.card-subtotal').forEach(($el) => {
+    const unit = parseInt($el.dataset.unit, 10) || 0;
+    $el.textContent = `小計 ¥${(unit * state.quantity).toLocaleString()}`;
+  });
+}
+
+// 店舗別 合計の再計算と描画
+function recalcSummary() {
+  const totals = new Map(); // source -> { total, items }
+  for (const state of cardState.values()) {
+    if (state.maxBySource.size === 0) continue;
+    for (const [src, price] of state.maxBySource) {
+      const cur = totals.get(src) || { total: 0, items: 0 };
+      cur.total += price * state.quantity;
+      cur.items += state.quantity;
+      totals.set(src, cur);
+    }
+  }
+  if (totals.size === 0) {
+    $summaryCard.classList.add('hidden');
+    $summaryTbody.innerHTML = '';
+    return;
+  }
+  const sorted = [...totals.entries()].sort((a, b) => b[1].total - a[1].total);
+  const best = sorted[0][1].total;
+  $summaryTbody.innerHTML = sorted.map(([src, { total, items }], i) => {
+    const isBest = total === best && i === 0;
+    const bestBadge = isBest ? '<span class="ml-2 text-xs bg-emerald-600 text-white rounded px-1.5 py-0.5">BEST</span>' : '';
+    return `
+      <tr class="${isBest ? 'bg-emerald-50' : ''}">
+        <td class="px-3 py-2 font-medium">${escapeHtml(SOURCE_LABELS[src] || src)}${bestBadge}</td>
+        <td class="px-3 py-2 text-center text-slate-600">${items} 点</td>
+        <td class="px-3 py-2 text-right font-semibold tabular-nums ${isBest ? 'text-emerald-700' : ''}">¥${total.toLocaleString()}</td>
+      </tr>
+    `;
+  }).join('');
+  $summaryCard.classList.remove('hidden');
 }
 
 // ---------- 履歴全削除 ----------
@@ -353,7 +466,9 @@ $clearHistoryBtn.addEventListener('click', () => {
   if (!confirm(`履歴 ${count} 件をすべて削除しますか？`)) return;
   clearAllHistory();
   $resultList.innerHTML = '';
+  cardState.clear();
   updateToolbar();
+  recalcSummary();
 });
 
 // ---------- バーコードスキャナ ----------
@@ -406,13 +521,12 @@ async function directJanLookup(jan) {
 function restoreHistory() {
   const items = loadHistory();
   if (items.length === 0) return;
-  // 古いものから順に処理して、新しいものほど上に来るように reverse 順で prepend
-  // ただし visual には保存順 (LocalStorage の先頭ほど新しい) を保ちたいので、配列を逆順に並べてprepend
-  // → 簡潔に、append でループしてOK (LocalStorage先頭=新しい順)
+  // LocalStorage の先頭が新しい順なので append でループ
   for (const p of items) {
-    const card = createCard(p);
+    const quantity = Number.isFinite(p.quantity) && p.quantity >= 1 ? p.quantity : 1;
+    const card = createCard(p, quantity);
     $resultList.appendChild(card);
-    fillCardPrices(card, p.jan_code);
+    fillCardPrices(card, p.jan_code, quantity);
   }
   updateToolbar();
 }
