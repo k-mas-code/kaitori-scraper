@@ -9,6 +9,7 @@ const SOURCE_LABELS = {
   morimori: '森森買取',
   ichoume: '買取一丁目',
   mobichi: 'モバイル一番',
+  kensaku: '買取けんさく君',
 };
 const CONDITION_LABELS = { new: '新品', used: '中古' };
 
@@ -31,6 +32,11 @@ const EXTERNAL_SHOPS = [
     urlBuilder: () => 'https://www.mobile-ichiban.com/',
     copyJan: true,
     note: 'トップを開きJANをコピーします。検索欄にペーストしてください。',
+  },
+  {
+    key: 'kensaku',
+    label: '買取けんさく君',
+    urlBuilder: (jan) => `https://www.kaitorikensakukun.com/itemsearch/?product_name=${encodeURIComponent(jan)}`,
   },
 ];
 const DEBOUNCE_MS = 250;
