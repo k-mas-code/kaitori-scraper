@@ -36,6 +36,12 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python rudeya_scraper.py
 
+      - name: Scrape kaitoriwiki
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python kaitoriwiki_scraper.py
+
       - name: Upload JSON snapshots as artifact
         uses: actions/upload-artifact@v4
         with:

@@ -6,9 +6,10 @@
 
 ```
 GitHub Actions (毎日12:00 JST)
-  ├─ scraper.py        → Supabase (products / price_history)
-  ├─ rudeya_scraper.py → Supabase (products / price_history)
-  └─ output/*.json     → Artifact (30日保持)
+  ├─ scraper.py             → Supabase (products / price_history)
+  ├─ rudeya_scraper.py      → Supabase (products / price_history)
+  ├─ kaitoriwiki_scraper.py → Supabase (products / price_history)
+  └─ output/*.json          → Artifact (30日保持)
 ```
 
 | 項目 | 値 |
@@ -34,6 +35,16 @@ GitHub Actions (毎日12:00 JST)
 - 各カテゴリ `/category/detail/{id}` を順次クロール
 - サーバーサイドレンダリングなので素直
 - **約3,200件 / 約10分**
+
+### kaitori.wiki (`kaitoriwiki_scraper.py`)
+- ハブサイト: 商品URLは外部サブドメイン (`iphonekaitori.tokyo` / `gamekaitori.jp` / `kadenkaitori.tokyo` / `pckaitori.tokyo` / `ipadkaitori.jp` / `camerakaitori.tokyo` / `cosmekaitori.jp`)
+- 商品データ自体は kaitori.wiki の検索ページ (`/search/{page}/price/{range}/name/all`) 上で完結
+- `price/{range}` は「N円以下」フィルター (1=5,000円 / 2=10,000 / 3=20,000 / 4=30,000 / 5=50,000)
+  - 5 が全件を含む superset なので **5 のみ巡回**で OK (約 176 ページ)
+- カテゴリは商品URLのホスト名から逆引き
+- 商品名末尾の 13 桁数字を JAN として抽出 (約97%でJAN取得可、SIMフリースマホ等は JAN無し→スキップ)
+- 価格は「最高買取価格」1列 → condition は固定で `used` 扱い
+- **約10,200件 / 約6分**, 50,000円超の商品は取得対象外
 
 ## DBスキーマ概要
 
@@ -78,9 +89,10 @@ python scraper.py
 
 | ファイル | 用途 |
 |---|---|
-| `.github/workflows/scrape.yml` | 本番。毎日12:00JST + workflow_dispatch |
+| `.github/workflows/scrape.yml` | 本番。毎日12:00JST + workflow_dispatch (3スクレイパーを順次実行) |
 | `.github/workflows/db_test.yml` | Supabase接続テスト（テストレコード upsert→select→delete） |
 | `.github/workflows/scrape_rudeya_only.yml` | rudeya のみ手動実行（kaitorishouten スキップで時短検証用） |
+| `.github/workflows/scrape_kaitoriwiki_only.yml` | kaitoriwiki のみ手動実行（検証用） |
 
 ## 進捗 / 次のステップ
 
