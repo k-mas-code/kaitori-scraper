@@ -6,6 +6,9 @@ const SOURCE_LABELS = {
   kaitorishouten: '買取商店',
   rudeya: '買取ルデヤ',
   kaitoriwiki: '買取wiki',
+  morimori: '森森買取',
+  ichoume: '買取一丁目',
+  mobichi: 'モバイル一番',
 };
 const CONDITION_LABELS = { new: '新品', used: '中古' };
 
@@ -86,13 +89,14 @@ function saveHistory(items) {
   }
 }
 
-function addToHistory(product, quantity = 1) {
+function addToHistory(product, quantity = 1, externalPrices = {}) {
   const entry = {
     jan_code: product.jan_code,
     name: product.name || '',
     image_url: product.image_url || '',
     category: product.category || '',
     quantity,
+    externalPrices,
   };
   const items = [entry, ...loadHistory().filter((p) => p.jan_code !== entry.jan_code)];
   saveHistory(items);
@@ -103,6 +107,20 @@ function updateHistoryQuantity(jan, quantity) {
   const items = loadHistory().map((p) =>
     p.jan_code === jan ? { ...p, quantity } : p
   );
+  saveHistory(items);
+}
+
+function updateHistoryExternalPrice(jan, source, price) {
+  const items = loadHistory().map((p) => {
+    if (p.jan_code !== jan) return p;
+    const externalPrices = { ...(p.externalPrices || {}) };
+    if (price && price > 0) {
+      externalPrices[source] = price;
+    } else {
+      delete externalPrices[source];
+    }
+    return { ...p, externalPrices };
+  });
   saveHistory(items);
 }
 
@@ -303,7 +321,7 @@ function renderSuggestions(items) {
 }
 
 // ---------- 商品選択 → カード追加 ----------
-async function selectProduct(product, { persist = true, scroll = true, quantity = 1 } = {}) {
+async function selectProduct(product, { persist = true, scroll = true, quantity = 1, externalPrices = {} } = {}) {
   hideSuggestions();
   $input.value = '';
   $clear.classList.add('hidden');
@@ -317,20 +335,20 @@ async function selectProduct(product, { persist = true, scroll = true, quantity 
   }
 
   // 履歴に保存 (LocalStorage)
-  if (persist) addToHistory(product, quantity);
+  if (persist) addToHistory(product, quantity, externalPrices);
 
   // カード生成して先頭に挿入
-  const card = createCard(product, quantity);
+  const card = createCard(product, quantity, externalPrices);
   $resultList.prepend(card);
   updateToolbar();
 
   if (scroll) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // 価格テーブルを埋める (非同期)
-  fillCardPrices(card, product.jan_code, quantity);
+  fillCardPrices(card, product.jan_code, quantity, externalPrices);
 }
 
-function createCard(product, quantity = 1) {
+function createCard(product, quantity = 1, externalPrices = {}) {
   const card = document.createElement('article');
   card.className = 'result-card bg-white rounded-lg shadow p-4';
   card.dataset.jan = product.jan_code;
@@ -373,18 +391,32 @@ function createCard(product, quantity = 1) {
       <div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center loading">価格を取得中</div>
     </div>
 
-    <div class="external-shops mt-3 text-xs">
-      <div class="text-slate-500 mb-1">他の買取店でも探す:</div>
-      <div class="flex flex-wrap gap-1.5">
+    <div class="external-shops mt-3">
+      <div class="text-xs text-slate-500 mb-1.5">
+        他の買取店で価格を確認 → 手入力で総額比較に追加
+      </div>
+      <div class="space-y-1.5">
         ${EXTERNAL_SHOPS.map((shop) => {
           const u = shop.urlBuilder(product.jan_code);
           const attr = shop.copyJan
-            ? `data-external-jan="${escapeHtml(product.jan_code)}" data-external-note="${escapeHtml(shop.note || '')}"`
+            ? `data-external-jan="${escapeHtml(product.jan_code)}"`
             : '';
-          return `<a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer"
-                     class="external-link inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-300 hover:bg-slate-50 hover:border-blue-500 text-slate-700"
-                     title="${escapeHtml(shop.label)}でJAN ${escapeHtml(product.jan_code)} を検索" ${attr}>
-                    ${escapeHtml(shop.label)} ↗</a>`;
+          const v = Number(externalPrices?.[shop.key]) || '';
+          return `
+            <div class="flex items-center gap-2 text-sm">
+              <a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer"
+                 class="external-link w-32 text-blue-600 hover:underline text-xs truncate"
+                 title="${escapeHtml(shop.label)}でJAN ${escapeHtml(product.jan_code)} を検索" ${attr}>
+                ${escapeHtml(shop.label)} ↗
+              </a>
+              <input type="number" inputmode="numeric"
+                     class="external-price-input w-28 text-right px-2 py-1 border border-slate-300 rounded outline-none focus:border-blue-500 tabular-nums text-sm"
+                     data-source="${escapeHtml(shop.key)}"
+                     placeholder="価格を入力" min="0" max="9999999"
+                     value="${v}">
+              <span class="text-xs text-slate-400">円</span>
+            </div>
+          `;
         }).join('')}
       </div>
     </div>
@@ -417,10 +449,26 @@ function createCard(product, quantity = 1) {
     $qty.dispatchEvent(new Event('input'));
   });
 
+  // 外部店の手入力価格 → cardState.maxBySource に反映
+  card.querySelectorAll('.external-price-input').forEach(($el) => {
+    $el.addEventListener('input', () => {
+      const source = $el.dataset.source;
+      const raw = parseInt($el.value, 10);
+      const val = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 9999999) : null;
+      const state = cardState.get(product.jan_code);
+      if (state) {
+        if (val) state.maxBySource.set(source, val);
+        else state.maxBySource.delete(source);
+      }
+      updateHistoryExternalPrice(product.jan_code, source, val);
+      recalcSummary();
+    });
+  });
+
   return card;
 }
 
-async function fillCardPrices(card, jan, quantity = 1) {
+async function fillCardPrices(card, jan, quantity = 1, externalPrices = {}) {
   const $section = card.querySelector('.price-section');
   const [prices, productsFallback] = await Promise.all([
     supabase
@@ -456,20 +504,24 @@ async function fillCardPrices(card, jan, quantity = 1) {
     .filter((r) => r.price != null)
     .sort((a, b) => b.price - a.price);
 
-  if (rows.length === 0) {
-    $section.innerHTML = `<div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center">価格データがまだ無いか、削除されました。</div>`;
-    cardState.set(jan, { quantity, maxBySource: new Map() });
-    recalcSummary();
-    return;
-  }
-
   // 店ごとの最高価格 (condition問わず) を集計してサマリーの基礎にする
   const maxBySource = new Map();
   for (const r of rows) {
     const cur = maxBySource.get(r.source) || 0;
     if (r.price > cur) maxBySource.set(r.source, r.price);
   }
+  // 手入力の外部店価格を上乗せ
+  for (const [src, p] of Object.entries(externalPrices || {})) {
+    const n = Number(p);
+    if (Number.isFinite(n) && n > 0) maxBySource.set(src, n);
+  }
   cardState.set(jan, { quantity, maxBySource });
+
+  if (rows.length === 0) {
+    $section.innerHTML = `<div class="bg-slate-50 rounded p-3 text-sm text-slate-500 text-center">DB上の価格データはまだ無いか、削除されました。</div>`;
+    recalcSummary();
+    return;
+  }
 
   const trs = rows.map((r) => {
     let url = r.detail_url || fallbackUrlBySource.get(r.source);
@@ -629,9 +681,10 @@ function restoreHistory() {
   // LocalStorage の先頭が新しい順なので append でループ
   for (const p of items) {
     const quantity = Number.isFinite(p.quantity) && p.quantity >= 1 ? p.quantity : 1;
-    const card = createCard(p, quantity);
+    const externalPrices = p.externalPrices && typeof p.externalPrices === 'object' ? p.externalPrices : {};
+    const card = createCard(p, quantity, externalPrices);
     $resultList.appendChild(card);
-    fillCardPrices(card, p.jan_code, quantity);
+    fillCardPrices(card, p.jan_code, quantity, externalPrices);
   }
   updateToolbar();
 }
