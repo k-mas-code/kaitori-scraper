@@ -1,0 +1,29 @@
+name: Keepalive
+
+# GitHub は 60 日間リポジトリにアクティビティが無いと scheduled workflow を自動停止する。
+# (2026-07-21 を最後に Daily Scrape が停止 → DB 書き込みが止まり Supabase も一時停止した)
+# 月1回 .github/keepalive の日時を更新してコミットし、停止を防ぐ。
+on:
+  schedule:
+    # 毎月1日 UTC 00:17 (JST 09:17)
+    - cron: '17 0 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Commit keepalive timestamp
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%SZ > .github/keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive
+          git commit -m "chore: keepalive"
+          git push
