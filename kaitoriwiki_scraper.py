@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """買取wiki (kaitori.wiki) 商品・買取価格スクレイパー
 
-検索ページ `/search/{page}/name/all` (価格絞り込みなし = 全商品) を
-page=1 から商品が無くなるまで巡回する。
+検索ページを page=1 から商品が無くなるまで巡回する。一覧は2種類を巡回して合算:
+  - `/search/{page}/name/all`          絞り込みなし (5万円超も出るが、約150ページ目以降で
+                                        既出商品が再掲され、その分 約2,000件が出てこない)
+  - `/search/{page}/price/5/name/all`  50,000円以下 (ほぼ欠けなし)
 
 1ページあたり50〜60件。商品名末尾にJANコード(13桁)が付与されており、
 商品URLは外部サブドメイン(iphonekaitori.tokyo, gamekaitori.jp 等)を指す。
@@ -22,9 +24,16 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://kaitori.wiki"
-# `/search/{page}/price/{N}/name/all` は「N円以下」の絞り込み (最大でも 5 = 50,000円以下) で
-# 高額商品が漏れるため、絞り込みなしの URL を巡回する (約222ページ)
+# 巡回する一覧 (label, パステンプレート)。どちらか片方だけでは全件を取れないので合算する:
+# - all:     絞り込みなし (約222ページ)。サイト側の並び順が不安定で、後半ページに既出商品が
+#            再掲され、5万円以下の約2,000件が一度も出てこない (再試行しても同じ結果)
+# - price5:  「50,000円以下」(約184ページ)。価格順でほぼ欠けが無いが 5万円超は出ない
+SEARCH_LISTINGS = [
+    ("all", "/search/{page}/name/all"),
+    ("price5", "/search/{page}/price/5/name/all"),
+]
 MAX_PAGES = 400
+MAX_STALE_PAGES = 3  # 新規0件のページがこの回数続いたら打ち切り
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 REQUEST_INTERVAL = 1.5
@@ -132,16 +141,17 @@ def extract_products(soup: BeautifulSoup) -> list[dict]:
     return products
 
 
-def scrape_pages() -> list[dict]:
-    """全ページを巡回"""
+def scrape_pages(label: str, path_template: str) -> list[dict]:
+    """1つの一覧の全ページを巡回"""
     collected: list[dict] = []
     seen_keys: set[str] = set()
+    stale_pages = 0
 
     for page in range(1, MAX_PAGES + 1):
-        url = f"{BASE_URL}/search/{page}/name/all"
+        url = f"{BASE_URL}{path_template.format(page=page)}"
         soup = fetch_html(url)
         if soup is None:
-            logger.info("  page %d: fetch failed -> stop", page)
+            logger.info("  %s page %d: fetch failed -> stop", label, page)
             break
 
         items = extract_products(soup)
@@ -156,7 +166,7 @@ def scrape_pages() -> list[dict]:
             unique_items.append(p)
 
         if not unique_items:
-            logger.info("  page %d: no items -> stop", page)
+            logger.info("  %s page %d: no items -> stop", label, page)
             break
 
         # 全ページを通じての重複検出 (ループ検出のため)
@@ -169,17 +179,19 @@ def scrape_pages() -> list[dict]:
             collected.append(p)
             new_count += 1
 
-        logger.info("  page=%d items=%d new=%d (total %d)",
-                    page, len(unique_items), new_count, len(collected))
+        logger.info("  %s page=%d items=%d new=%d (total %d)",
+                    label, page, len(unique_items), new_count, len(collected))
 
-        # 全件既出 = 末尾ループ (最終ページ以降は同じものを返してくる可能性)
-        if new_count == 0:
-            logger.info("  page=%d all duplicates -> stop", page)
+        # 全件既出が続く = 末尾ループ (最終ページ以降は同じものを返してくる可能性)。
+        # 絞り込みなし一覧は後半に既出商品の再掲が多いので、1ページだけでは止めない
+        stale_pages = stale_pages + 1 if new_count == 0 else 0
+        if stale_pages >= MAX_STALE_PAGES:
+            logger.info("  %s page=%d: %d pages of all duplicates -> stop", label, page, stale_pages)
             break
 
         time.sleep(REQUEST_INTERVAL)
     else:
-        logger.warning("reached MAX_PAGES=%d; later pages may be missing", MAX_PAGES)
+        logger.warning("%s: reached MAX_PAGES=%d; later pages may be missing", label, MAX_PAGES)
 
     return collected
 
@@ -190,9 +202,24 @@ def scrape_all() -> dict:
         "categories": {},
     }
 
+    # 一覧ごとに巡回し、JAN (無ければURL/商品名) で重複排除しながら合算
+    all_by_key: dict[str, dict] = {}
+    for label, path_template in SEARCH_LISTINGS:
+        logger.info("=== listing: %s ===", label)
+        items = scrape_pages(label, path_template)
+        added = 0
+        for p in items:
+            key = p.get("jan_code") or p.get("detail_url") or p.get("name")
+            if not key or key in all_by_key:
+                continue
+            all_by_key[key] = p
+            added += 1
+        logger.info("listing %s done: collected=%d added=%d (grand total %d)",
+                    label, len(items), added, len(all_by_key))
+
     # カテゴリ別に整理
     by_category: dict[str, list[dict]] = {}
-    for p in scrape_pages():
+    for p in all_by_key.values():
         cat = p.get("category", "不明")
         by_category.setdefault(cat, []).append(p)
 
