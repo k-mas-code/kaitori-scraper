@@ -121,8 +121,9 @@ def parse_item_page(props: dict) -> ItemPage:
         raise PageFormatError(f"上乗せ率が想定外 ({upsell_pct}%)")
 
     stock = item.get("stock") or {}
-    in_stock = (bool(stock.get("isAvailable")) and bool(item.get("isOnSale"))
-                and stock.get("quantity") != 0
+    # 在庫数 0 でも isReserveOverdraft (取り寄せ) ならカートに入れられるので、買える商品として扱う
+    sold_out = stock.get("quantity") == 0 and not stock.get("isReserveOverdraft")
+    in_stock = (bool(stock.get("isAvailable")) and bool(item.get("isOnSale")) and not sold_out
                 and (props.get("cartButton") or {}).get("displayState") == "Active")
     return ItemPage(
         store_id=seller["id"],

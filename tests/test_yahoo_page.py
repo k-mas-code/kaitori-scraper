@@ -55,6 +55,17 @@ def test_flags():
     assert any("ボーナスストアPlus" in t for t in page("digimart").point_titles)
 
 
+def test_stock_rules():
+    def with_stock(**stock):
+        props = json.loads(json.dumps(FIXTURES["joshin"]["pageProps"]))
+        props["item"]["stock"].update(stock)
+        return parse_item_page(props)
+    assert with_stock(quantity=None).in_stock                                   # 在庫数を出さない店
+    assert with_stock(quantity=0, isReserveOverdraft=True).in_stock             # 取り寄せ (カートに入れられる)
+    assert not with_stock(quantity=0, isReserveOverdraft=False).in_stock        # 売り切れ
+    assert not with_stock(isAvailable=False).in_stock
+
+
 def test_extract_page_props_and_format_errors():
     html = '<html><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"a":1}}}</script></html>'
     assert extract_page_props(html) == {"a": 1}
