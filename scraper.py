@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """買取商店 (kaitorishouten-co.jp) 商品・買取価格スクレイパー
 
-大カテゴリ (keitai/kaden/nitiyouhin) ごとに:
-  1. 「すべて」ページのAjax API (list_{cat}_new/N) を全ページ取得
-  2. 各サブカテゴリAPI (products/{N}/list_category/{ID}) を全ページ取得
-  3. JANコード（または商品名）で重複排除して合算
+サイトは React SPA で、商品データは公開 JSON API (/api/v1) から取得する:
+  1. /api/v1/categories で最上位カテゴリ (スマホ/家電/お酒) の ID を名前から引く
+  2. /api/v1/products?per_page=100&page=N&category_id=ID を全ページ取得
+     (親カテゴリIDを指定すると配下サブカテゴリの商品もすべて返る)
+  3. JANコード（または商品名）で重複排除
 """
 
 import json
@@ -17,10 +18,15 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup, NavigableString
 
 BASE_URL = "https://www.kaitorishouten-co.jp"
-CATEGORIES = ["keitai", "kaden", "nitiyouhin"]
+API_URL = f"{BASE_URL}/api/v1"
+# 出力キー (旧URLパス名。DB の category 値を変えないため維持) → API の最上位カテゴリ名
+CATEGORIES = {"keitai": "スマホ", "kaden": "家電", "nitiyouhin": "お酒"}
+PER_PAGE = 100  # サーバ側上限 (省略時は20)
+RANK_TO_CONDITION = {1: "new", 2: "used"}
+# JAN/UPC/GTIN として採用する桁数 (「送料」「ポイント」等のダミー "111" "777" を除外)
+JAN_LENGTHS = {8, 12, 13, 14}
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 REQUEST_INTERVAL = 1.5
@@ -44,167 +50,124 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ApiFormatError(RuntimeError):
+    """API 応答が想定した形でない (サイト側の仕様変更の疑い)"""
+
+
 def make_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS)
     return s
 
 
-def fetch(session: requests.Session, url: str, referer: str | None = None) -> str | None:
+def fetch_json(session: requests.Session, path: str, referer: str | None = None) -> dict | None:
+    url = f"{API_URL}{path}"
     headers = {"Referer": referer} if referer else {}
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = session.get(url, headers=headers, timeout=30)
-            if resp.status_code == 500:
-                # ページ範囲外と判断
-                return None
             if resp.status_code == 503:
                 # レート制限 → 長めに待ってリトライ
                 logger.warning("503 rate-limited, sleep %ds: %s", RATE_LIMIT_BACKOFF, url)
                 time.sleep(RATE_LIMIT_BACKOFF)
                 continue
             resp.raise_for_status()
-            return resp.text
-        except requests.RequestException as e:
+            return resp.json()
+        except (requests.RequestException, ValueError) as e:
             logger.warning("fetch failed (%d/%d): %s %s", attempt, MAX_RETRIES, url, e)
             if attempt < MAX_RETRIES:
                 time.sleep(attempt * 2)
     return None
 
 
-def parse_price(text: str) -> int | None:
-    digits = re.sub(r"[^\d]", "", text)
-    return int(digits) if digits else None
+def normalize_jan(raw) -> str | None:
+    """数字のみ・妥当な桁数のものだけ JAN として採用。
+    キャリア版の "840353956209dc" のような接尾辞つきは None (剥がすと SIMフリー版と衝突する)"""
+    jan = str(raw or "").strip()
+    return jan if jan.isdigit() and len(jan) in JAN_LENGTHS else None
 
 
-def extract_deduction_options(scope) -> list[dict]:
-    options = []
-    for label in scope.select("label.form-check-label"):
-        text = label.get_text(strip=True)
-        m = re.search(r"(.+?)\s*([+-]\d[\d,]*)\s*円", text)
-        if m:
-            options.append({"label": m.group(1).strip(), "amount": int(m.group(2).replace(",", ""))})
-    return options
+def to_product(item: dict) -> dict | None:
+    """API の商品 1 件を db_writer が読む dict に変換"""
+    name = str(item.get("name") or "").strip()
+    if not name:
+        return None
+    jan_code = normalize_jan(item.get("jan"))
+
+    prices: dict = {}
+    deductions: list[dict] = []
+    if not item.get("price_undecided"):
+        for rank in item.get("rank_options") or []:
+            cond = RANK_TO_CONDITION.get(rank.get("rank_type_id"))
+            base = rank.get("base")
+            if cond and isinstance(base, int) and cond not in prices:
+                prices[cond] = base
+            for opt in rank.get("options") or []:
+                amount = opt.get("price_change")
+                if not isinstance(amount, int) or amount == 0:
+                    continue
+                opt_name = str(opt.get("name") or "")
+                # "利用制限△ -5000円" → "利用制限△"
+                label = re.sub(r"\s*[+-]\s*[\d,]+\s*円\s*$", "", opt_name).strip() or opt_name
+                deduction = {"label": label, "amount": amount}
+                if deduction not in deductions:
+                    deductions.append(deduction)
+
+    if jan_code:
+        detail_url = f"{BASE_URL}/products/list?name={jan_code}"
+    else:
+        detail_url = f"{BASE_URL}/products/detail/{item.get('id')}"
+
+    product: dict = {
+        "name": name,
+        "jan_code": jan_code,
+        "image_url": item.get("image_url"),
+        "prices": prices,
+        "detail_url": detail_url,
+    }
+    if deductions:
+        product["deduction_options"] = deductions
+    return product
 
 
-def extract_card_products(soup: BeautifulSoup) -> list[dict]:
-    """「すべて」ページのカード形式から商品を抽出"""
-    products = []
-    for item in soup.select("div.item.item-thumbnail.item-product-list"):
-        title_el = item.select_one("h4.item-title")
-        if not title_el:
-            continue
-        name = title_el.get_text(separator=" ", strip=True)
-
-        code_els = item.select("span.product-code-default")
-        jan_code = next((c.get_text(strip=True) for c in code_els if c.get_text(strip=True).isdigit()), None)
-
-        img = item.select_one("div.item-image img")
-        image_url = img["src"] if img else None
-
-        price_els = item.select("div.item-price.encrypt-price.plain-price")
-        prices: dict = {}
-        if len(price_els) >= 1:
-            prices["new"] = parse_price(price_els[0].get_text(strip=True))
-        if len(price_els) >= 2:
-            prices["used"] = parse_price(price_els[1].get_text(strip=True))
-
-        deductions = extract_deduction_options(item)
-
-        product: dict = {"name": name, "jan_code": jan_code, "image_url": image_url, "prices": prices}
-        if deductions:
-            product["deduction_options"] = deductions
-        products.append(product)
-    return products
+def fetch_top_category_ids(session: requests.Session) -> dict[str, int]:
+    """最上位カテゴリ名 → ID"""
+    data = fetch_json(session, "/categories", referer=f"{BASE_URL}/")
+    if data is None:
+        raise ApiFormatError("failed to fetch /categories")
+    items = data.get("items")
+    if not isinstance(items, list):
+        raise ApiFormatError(f"/categories: unexpected response keys {list(data)[:10]}")
+    return {c["name"]: c["id"] for c in items if c.get("hierarchy") == 1}
 
 
-def extract_table_products(soup: BeautifulSoup) -> list[dict]:
-    """サブカテゴリAPIのテーブル形式から商品を抽出"""
-    products = []
-    for tr in soup.select('tr[id^="ex-product-"]'):
-        tds = tr.find_all("td", recursive=False)
-        if len(tds) < 2:
-            continue
-
-        # 商品名: 2番目のtdの直接の子テキスト
-        name_td = tds[1]
-        name_parts = []
-        for child in name_td.children:
-            if isinstance(child, NavigableString):
-                t = str(child).strip()
-                if t:
-                    name_parts.append(t)
-            else:
-                break
-        name = " ".join(name_parts).strip()
-        if not name:
-            continue
-
-        # JAN
-        jan_code = next(
-            (sp.get_text(strip=True) for sp in name_td.select("span.product-code-default")
-             if sp.get_text(strip=True).isdigit()),
-            None,
-        )
-
-        # 画像
-        img = tds[0].select_one("img") if tds else None
-        image_url = img["src"] if img else None
-
-        # 価格（trの中の item-price 要素）
-        price_els = tr.select("div.item-price.encrypt-price.plain-price")
-        prices: dict = {}
-        if len(price_els) >= 1:
-            prices["new"] = parse_price(price_els[0].get_text(strip=True))
-        if len(price_els) >= 2:
-            prices["used"] = parse_price(price_els[1].get_text(strip=True))
-
-        deductions = extract_deduction_options(tr)
-
-        product: dict = {"name": name, "jan_code": jan_code, "image_url": image_url, "prices": prices}
-        if deductions:
-            product["deduction_options"] = deductions
-        products.append(product)
-    return products
-
-
-def discover_endpoints(html: str) -> tuple[str | None, list[str]]:
-    """ページHTMLから:
-    - 「すべて」のAjaxエンドポイント (e.g. /products/list_keitai_new/9)
-    - 全サブカテゴリエンドポイント (e.g. /products/1/list_category/17)
-    を抽出して返す
-    """
-    all_endpoint = None
-    m = re.search(r'var topUrl\s*=\s*"([^"]+)"', html)
-    if m:
-        all_endpoint = m.group(1)
-
-    sub_endpoints = sorted(set(
-        re.findall(r"/products/\d+/list_category/\d+(?:/list_tag/\d+)?", html)
-    ))
-    # /list_tag/ を含むものはタグフィルタなので除外（親カテゴリで取得済み）
-    sub_endpoints = [e for e in sub_endpoints if "/list_tag/" not in e]
-    return all_endpoint, sub_endpoints
-
-
-def crawl_paginated(session: requests.Session, base_url: str, endpoint: str,
-                    referer: str, extractor) -> list[dict]:
-    """endpoint を pageno=1,2,... と回して全商品を取得"""
-    all_products: list[dict] = []
-    pageno = 1
+def crawl_category(session: requests.Session, category_id: int, referer: str) -> list[dict]:
+    """category_id の商品を page=1,2,... と回して全件取得"""
+    raw_items: list[dict] = []
+    total = 0
+    page = 1
     while True:
-        url = f"{base_url}{endpoint}?pageno={pageno}"
-        html = fetch(session, url, referer=referer)
-        if html is None:
+        path = f"/products?per_page={PER_PAGE}&page={page}&category_id={category_id}"
+        data = fetch_json(session, path, referer=referer)
+        if data is None:
+            logger.error("  page %d: fetch failed -> stop (fetched %d)", page, len(raw_items))
             break
-        soup = BeautifulSoup(html, "lxml")
-        products = extractor(soup)
-        if not products:
+        items, total = data.get("items"), data.get("total")
+        if not isinstance(items, list) or not isinstance(total, int):
+            raise ApiFormatError(f"{path}: unexpected response keys {list(data)[:10]}")
+        if not items:
+            if page == 1 and total > 0:
+                raise ApiFormatError(f"{path}: total={total} but no items")
             break
-        all_products.extend(products)
-        pageno += 1
+        raw_items.extend(items)
+        if len(raw_items) >= total:
+            break
+        page += 1
         time.sleep(REQUEST_INTERVAL)
-    return all_products
+
+    if len(raw_items) < total:
+        logger.warning("  fetched %d of total %d", len(raw_items), total)
+    return [p for p in (to_product(i) for i in raw_items) if p]
 
 
 def merge_unique(existing: dict[str, dict], new_items: list[dict]) -> int:
@@ -219,60 +182,25 @@ def merge_unique(existing: dict[str, dict], new_items: list[dict]) -> int:
     return added
 
 
-def scrape_category(session: requests.Session, category: str) -> list[dict]:
-    top_url = f"{BASE_URL}/{category}"
-    html = fetch(session, top_url)
-    if html is None:
-        logger.error("failed to fetch top page: %s", category)
-        return []
-
-    all_endpoint, sub_endpoints = discover_endpoints(html)
-    logger.info("  all-endpoint: %s", all_endpoint)
-    logger.info("  sub-endpoints: %d", len(sub_endpoints))
-
-    bucket: dict[str, dict] = {}
-
-    # kaitorishouten には商品詳細ページが無いが、トップ ?name=JAN でJAN検索結果に
-    # 飛べるため、各商品の detail_url にはそれを採用する
-    def _attach_url(items):
-        for it in items:
-            jan = it.get("jan_code")
-            if jan:
-                it.setdefault("detail_url", f"{BASE_URL}/?name={jan}")
-            else:
-                it.setdefault("detail_url", top_url)
-        return items
-
-    # 1. 「すべて」
-    if all_endpoint:
-        items = _attach_url(
-            crawl_paginated(session, BASE_URL, all_endpoint, top_url, extract_card_products)
-        )
-        added = merge_unique(bucket, items)
-        logger.info("  [all] %d items, +%d new (total %d)", len(items), added, len(bucket))
-
-    # 2. 各サブカテゴリ
-    for ep in sub_endpoints:
-        items = _attach_url(
-            crawl_paginated(session, BASE_URL, ep, top_url, extract_table_products)
-        )
-        added = merge_unique(bucket, items)
-        logger.info("  [%s] %d items, +%d new (total %d)", ep, len(items), added, len(bucket))
-
-    return list(bucket.values())
-
-
 def scrape_all() -> dict:
     result: dict = {
         "scraped_at": datetime.now().isoformat(timespec="seconds"),
         "categories": {},
     }
-    for category in CATEGORIES:
-        logger.info("=== category: %s ===", category)
-        session = make_session()
-        products = scrape_category(session, category)
-        result["categories"][category] = products
-        logger.info("category %s done: %d products", category, len(products))
+    session = make_session()
+    top_ids = fetch_top_category_ids(session)
+    time.sleep(REQUEST_INTERVAL)
+
+    for category, api_name in CATEGORIES.items():
+        logger.info("=== category: %s (%s) ===", category, api_name)
+        if api_name not in top_ids:
+            raise ApiFormatError(f"top category {api_name!r} not found in {sorted(top_ids)}")
+        items = crawl_category(session, top_ids[api_name], referer=f"{BASE_URL}/{category}")
+        bucket: dict[str, dict] = {}
+        merge_unique(bucket, items)
+        result["categories"][category] = list(bucket.values())
+        logger.info("category %s done: %d products (%d before dedup)", category, len(bucket), len(items))
+        time.sleep(REQUEST_INTERVAL)
     return result
 
 
