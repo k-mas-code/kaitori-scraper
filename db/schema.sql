@@ -24,7 +24,7 @@ create index if not exists idx_products_category on products(category);
 create table if not exists price_history (
   jan_code      text not null,
   source        text not null,           -- 'kaitorishouten' / 'rudeya' / 'kaitoriwiki'
-  condition     text not null,           -- 'new' or 'used'
+  condition     text not null,           -- 'new' or 'used' (kaitoriwiki は新品価格のみ = 'new')
   scraped_date  date not null,
   price         int,
   note          text,                    -- 備考（減額条件等）

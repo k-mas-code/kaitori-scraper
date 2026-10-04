@@ -133,6 +133,8 @@ def extract_products(soup: BeautifulSoup) -> list[dict]:
         products.append({
             "name": name,
             "jan_code": jan_code,
+            # kaitoriwiki は新品の買取価格だけを扱う (db_writer が "新品" → condition='new' にする)
+            "condition": "新品",
             "price": price,
             "image_url": image_url,
             "detail_url": detail_url,

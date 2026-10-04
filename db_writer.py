@@ -57,7 +57,7 @@ def upsert_products(client: Client, products: list[dict], source: str) -> int:
 def insert_price_history(client: Client, products: list[dict], source: str) -> int:
     """price_history テーブルへ insert。
     kaitorishouten: prices = {new: X, used: Y} を condition='new'/'used' の2行に展開
-    rudeya: condition フィールドがあるのでそのまま使用
+    rudeya / kaitoriwiki: condition フィールド ("新品" → 'new'、それ以外 → 'used') を使用
     """
     today = date.today().isoformat()
     by_key: dict[tuple, dict] = {}
