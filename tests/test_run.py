@@ -36,7 +36,7 @@ def run(client, jan="4900000000000", price=9000):
 
 def test_search_variants():
     assert search_variants("4900000000000") == ["4900000000000"]
-    assert search_variants("840353956209") == ["840353956209", "0840353956209"]
+    assert search_variants("840353956209") == ["0840353956209"]       # 12 桁のままだと API が 400 を返す
 
 
 def test_paging_stops_when_price_can_no_longer_pass():
@@ -55,10 +55,10 @@ def test_all_pages_are_read_while_prices_can_pass():
     assert [c[1] for c in client.calls] == [1, 51, 101] and len(record["candidates"]) == 120
 
 
-def test_upc_falls_back_to_zero_padded_jan():
+def test_upc_is_searched_as_zero_padded_jan():
     client = FakeClient({"0840353956209": [hit(8000, "s1_a")]})
     record = run(client, jan="840353956209")
-    assert [c[0] for c in client.calls] == ["840353956209", "0840353956209"]
+    assert [c[0] for c in client.calls] == ["0840353956209"]
     assert record["jan_code"] == "840353956209" and len(record["candidates"]) == 1
 
 

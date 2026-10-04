@@ -69,8 +69,8 @@ def select_targets(buyback, min_price: int | None, max_price: int | None, limit:
 
 
 def search_variants(jan_code: str) -> list[str]:
-    """API に渡す JAN。12 桁 (UPC) は Yahoo! 側が先頭 0 付きの 13 桁で登録していることがあるので両方試す"""
-    return [jan_code, "0" + jan_code] if len(jan_code) == 12 else [jan_code]
+    """API に渡す JAN。12 桁 (UPC) をそのまま渡すと 400 になるので、先頭に 0 を付けた 13 桁で検索する"""
+    return ["0" + jan_code] if len(jan_code) == 12 else [jan_code]
 
 
 def search_one_jan(client: ItemSearchClient, buyback: Buyback, cfg, stores, coupon_margin: float,
@@ -234,12 +234,17 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     record = search_one_jan(client, b, cfg, stores, args.coupon_margin, price_rate)
                 except JanSearchError as e:
-                    # その JAN は済みにせず (次回の再開でやり直す)、次へ進む
-                    failed.append(b.jan_code)
                     consecutive_failures += 1
                     logger.warning("JAN %s 失敗: %s", b.jan_code, e)
                     if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                         raise YahooApiError(f"JAN 単位の失敗が {consecutive_failures} 件続いた") from e
+                    if e.permanent:
+                        # 何度やっても同じ (API が受け付けない JAN)。候補なしとして済みにする
+                        state.append_api_record({"jan_code": b.jan_code, "hits_total": 0, "hits_seen": 0,
+                                                 "candidates": [], "error": str(e)})
+                        finished += 1
+                    else:
+                        failed.append(b.jan_code)   # 済みにせず、次回の再開でやり直す
                     continue
                 consecutive_failures = 0
                 state.append_api_record(record)
