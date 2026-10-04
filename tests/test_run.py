@@ -4,7 +4,7 @@ from decimal import Decimal
 from arbitrage.buyback import Buyback
 from arbitrage.config import BsPlusConfig, CampaignConfig
 from arbitrage.prefilter import max_price_rate
-from arbitrage.run import search_one_jan, search_variants
+from arbitrage.run import search_one_jan, search_variants, select_targets
 from arbitrage.stores import Store, StoreList
 
 STORES = StoreList({"s1": Store("s1", "s1", "家電", False, Decimal("0.04"), Decimal("0.14"))},
@@ -60,3 +60,13 @@ def test_upc_falls_back_to_zero_padded_jan():
     record = run(client, jan="840353956209")
     assert [c[0] for c in client.calls] == ["840353956209", "0840353956209"]
     assert record["jan_code"] == "840353956209" and len(record["candidates"]) == 1
+
+
+def test_select_targets_filters_by_price_and_spreads_limit():
+    items = [Buyback(f"{i:013d}", i * 100, "rudeya", "2026-10-04") for i in range(1, 1001)]   # 100〜100,000 円
+    in_range = select_targets(items, 5000, 60000, None)
+    assert len(in_range) == 551 and in_range[0].price == 60000 and in_range[-1].price == 5000
+    picked = select_targets(items, 5000, 60000, 100)
+    assert len(picked) == 100 and len({b.jan_code for b in picked}) == 100
+    assert picked[0].price == 60000 and picked[-1].price < 6000          # 価格帯の上から下まで選ばれる
+    assert select_targets(items, None, None, 5000) == select_targets(items, None, None, None)

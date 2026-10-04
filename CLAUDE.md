@@ -74,7 +74,8 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 
 ```bash
 .venv/bin/python -m arbitrage.run --coupon-margin 0.2              # 全件 (約1.6万 JAN。API だけで 9〜10 時間)
-.venv/bin/python -m arbitrage.run --limit 100 --no-db              # 試行: 買取価格の高い順に 100 JAN、DB 保存なし
+.venv/bin/python -m arbitrage.run --limit 100 --no-db              # 試行: 全体から均等に 100 JAN、DB 保存なし
+.venv/bin/python -m arbitrage.run --min-buyback 5000 --max-buyback 60000   # 買取価格の範囲で対象を絞る
 .venv/bin/python -m arbitrage.run --stage api                      # 商品検索APIでの絞り込みまで
 .venv/bin/python -m arbitrage.run --check-config                   # campaigns.yaml の解釈を表示 (通信なし)
 .venv/bin/python -m pytest -q tests                                # 単体テスト
