@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """買取wiki (kaitori.wiki) 商品・買取価格スクレイパー
 
-検索ページ `/search/{page}/price/{range}/name/all` を巡回:
-  - page: 1から商品が無くなるまで
-  - range: 1〜5 (5,000円以下 / 10,000 / 20,000 / 30,000 / 50,000円以下)
+検索ページ `/search/{page}/name/all` (価格絞り込みなし = 全商品) を
+page=1 から商品が無くなるまで巡回する。
 
 1ページあたり50〜60件。商品名末尾にJANコード(13桁)が付与されており、
 商品URLは外部サブドメイン(iphonekaitori.tokyo, gamekaitori.jp 等)を指す。
@@ -22,17 +21,9 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://kaitori.wiki"
-# price/N は「N円以下」のフィルター (N=1:5000, 2:10000, 3:20000, 4:30000, 5:50000)
-# 5 = 50,000円以下が全件を含むので、5のみ巡回すれば十分
-PRICE_RANGES = [5]
-PRICE_RANGE_LABELS = {
-    1: "5000円以下",
-    2: "10000円以下",
-    3: "20000円以下",
-    4: "30000円以下",
-    5: "50000円以下",
-}
-MAX_PAGES_PER_RANGE = 300
+# `/search/{page}/price/{N}/name/all` は「N円以下」の絞り込み (最大でも 5 = 50,000円以下) で
+# 高額商品が漏れるため、絞り込みなしの URL を巡回する (約222ページ)
+MAX_PAGES = 400
 
 OUTPUT_DIR = Path(__file__).parent / "output"
 REQUEST_INTERVAL = 1.5
@@ -104,7 +95,7 @@ def category_from_url(url: str) -> str:
     return DOMAIN_TO_CATEGORY.get(host, "その他")
 
 
-def extract_products(soup: BeautifulSoup, price_range: int) -> list[dict]:
+def extract_products(soup: BeautifulSoup) -> list[dict]:
     """tr 配下の td-pic / td-name / td-price から商品データを抽出"""
     products: list[dict] = []
     # 同じテーブルがPC版とモバイル版で重複描画されている可能性があるためJANで後段dedupする
@@ -135,24 +126,23 @@ def extract_products(soup: BeautifulSoup, price_range: int) -> list[dict]:
             "image_url": image_url,
             "detail_url": detail_url,
             "category": category,
-            "price_range": PRICE_RANGE_LABELS.get(price_range),
         })
     return products
 
 
-def scrape_range(price_range: int) -> list[dict]:
-    """価格帯ごとに全ページを巡回"""
+def scrape_pages() -> list[dict]:
+    """全ページを巡回"""
     collected: list[dict] = []
     seen_keys: set[str] = set()
 
-    for page in range(1, MAX_PAGES_PER_RANGE + 1):
-        url = f"{BASE_URL}/search/{page}/price/{price_range}/name/all"
+    for page in range(1, MAX_PAGES + 1):
+        url = f"{BASE_URL}/search/{page}/name/all"
         soup = fetch_html(url)
         if soup is None:
-            logger.info("  page %d: fetch failed -> stop range %d", page, price_range)
+            logger.info("  page %d: fetch failed -> stop", page)
             break
 
-        items = extract_products(soup, price_range)
+        items = extract_products(soup)
         # 同一ページ内のPC/モバイル重複を除去
         unique_items: list[dict] = []
         page_keys: set[str] = set()
@@ -164,28 +154,30 @@ def scrape_range(price_range: int) -> list[dict]:
             unique_items.append(p)
 
         if not unique_items:
-            logger.info("  page %d: no items -> stop range %d", page, price_range)
+            logger.info("  page %d: no items -> stop", page)
             break
 
         # 全ページを通じての重複検出 (ループ検出のため)
-        new_in_range = 0
+        new_count = 0
         for p in unique_items:
             key = p.get("jan_code") or p.get("detail_url") or p.get("name")
             if not key or key in seen_keys:
                 continue
             seen_keys.add(key)
             collected.append(p)
-            new_in_range += 1
+            new_count += 1
 
-        logger.info("  range=%d page=%d items=%d new=%d (total %d)",
-                    price_range, page, len(unique_items), new_in_range, len(collected))
+        logger.info("  page=%d items=%d new=%d (total %d)",
+                    page, len(unique_items), new_count, len(collected))
 
         # 全件既出 = 末尾ループ (最終ページ以降は同じものを返してくる可能性)
-        if new_in_range == 0:
-            logger.info("  range=%d page=%d all duplicates -> stop", price_range, page)
+        if new_count == 0:
+            logger.info("  page=%d all duplicates -> stop", page)
             break
 
         time.sleep(REQUEST_INTERVAL)
+    else:
+        logger.warning("reached MAX_PAGES=%d; later pages may be missing", MAX_PAGES)
 
     return collected
 
@@ -196,24 +188,9 @@ def scrape_all() -> dict:
         "categories": {},
     }
 
-    all_by_key: dict[str, dict] = {}
-
-    for r in PRICE_RANGES:
-        logger.info("=== price range %d (%s) ===", r, PRICE_RANGE_LABELS[r])
-        items = scrape_range(r)
-        added = 0
-        for p in items:
-            key = p.get("jan_code") or p.get("detail_url") or p.get("name")
-            if not key or key in all_by_key:
-                continue
-            all_by_key[key] = p
-            added += 1
-        logger.info("range %d done: collected=%d added=%d (grand total %d)",
-                    r, len(items), added, len(all_by_key))
-
     # カテゴリ別に整理
     by_category: dict[str, list[dict]] = {}
-    for p in all_by_key.values():
+    for p in scrape_pages():
         cat = p.get("category", "不明")
         by_category.setdefault(cat, []).append(p)
 
