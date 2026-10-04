@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from .config import CampaignConfig
+from .coupons import manual_coupon_json, usable_manual_coupons
 from .points import PointComponent, evaluate
 from .prefilter import (STORE_POINT_BASE, STORE_POINT_NAME, bsplus_component, campaign_applies)
-from .stores import Store, StoreList
+from .stores import Store
 from .yahoo_page import Coupon, ItemPage
 
 # 結果にしない理由
@@ -40,32 +41,44 @@ def skip_reason(candidate: dict, page: ItemPage | None) -> str | None:
     return None
 
 
-def final_components(store: Store, cfg: CampaignConfig, stores: StoreList, page: ItemPage) -> list[PointComponent]:
+def final_components(store: Store, cfg: CampaignConfig, page: ItemPage) -> list[PointComponent]:
     """その商品に実際に付く枠: 共通分 + 対象のキャンペーン + ストアポイント (1% + 上乗せ) + ボーナスストアPlus"""
     components = list(cfg.common)
     components += [c.component for c in cfg.campaigns if campaign_applies(c, store, list(page.point_titles))]
     components.append(PointComponent(name=STORE_POINT_NAME, rate=STORE_POINT_BASE + page.upsell_rate))
-    bsplus = bsplus_component(store, cfg, stores.global_bonus_labels, cfg.bsplus.good_store_bonus_stacks)
+    bsplus = bsplus_component(store, cfg)
     if bsplus:
         components.append(bsplus)
     return components
 
 
-def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignConfig, stores: StoreList,
+def coupon_options(page: ItemPage, cfg: CampaignConfig, coupon: Coupon | None,
+                   coupon_detail: dict | None) -> list[tuple[int, dict]]:
+    """使えるクーポンの候補 [(値引き額, 結果行に入れる JSON)]。ページの公開クーポン (検証済みの 1 枚) と、
+    その店・価格で使える手持ちクーポンすべて"""
+    options: list[tuple[int, dict]] = []
+    if coupon is not None:
+        options.append((coupon.discount, {**coupon.to_json(coupon_detail), "source": "page"}))
+    options += [(discount, manual_coupon_json(c, discount))
+                for c, discount in usable_manual_coupons(cfg.coupons, page.store_id, page.price)]
+    return options
+
+
+def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignConfig,
                  coupon: Coupon | None, coupon_detail: dict | None) -> dict | None:
     """本来の式で計算し、黒字なら arbitrage_results の 1 行を返す (赤字・トントンは None)。
 
-    クーポンを使うと最低購入額を割ってキャンペーンが外れることがあるので、
-    使う場合と使わない場合の両方を計算して利益の大きい方を採る。
+    クーポンは 1 注文 1 枚 (併用不可)。クーポンを使うと最低購入額を割ってキャンペーンが外れることも
+    あるので、「使わない」と各クーポンをそれぞれ計算して利益がいちばん大きいものを採る。
     """
-    components = final_components(store, cfg, stores, page)
+    components = final_components(store, cfg, page)
     buyback_price = candidate["buyback_price"]
     best = evaluate(page.price, 0, buyback_price, components)
-    used_coupon = None
-    if coupon is not None:
-        with_coupon = evaluate(page.price, coupon.discount, buyback_price, components)
+    used_discount, used_coupon = 0, None
+    for discount, coupon_json in coupon_options(page, cfg, coupon, coupon_detail):
+        with_coupon = evaluate(page.price, discount, buyback_price, components)
         if with_coupon["profit"] > best["profit"]:
-            best, used_coupon = with_coupon, coupon
+            best, used_discount, used_coupon = with_coupon, discount, coupon_json
     if best["effective_price"] <= 0 or best["profit"] <= 0:
         return None
     return {
@@ -77,8 +90,8 @@ def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignCon
         "item_code": candidate["item_code"],
         "item_url": candidate["item_url"],
         "sale_price": page.price,
-        "coupon": used_coupon.to_json(coupon_detail) if used_coupon else None,
-        "coupon_discount": used_coupon.discount if used_coupon else 0,
+        "coupon": used_coupon,
+        "coupon_discount": used_discount,
         "points": best["points"],
         "points_total": best["points_total"],
         "capped_campaigns": best["capped_campaigns"],

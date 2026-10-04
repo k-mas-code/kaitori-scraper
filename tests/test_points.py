@@ -77,3 +77,20 @@ def test_optimistic_price_is_at_most_spec_formula():
     # 依頼の絞り込み式 価格 × (1 − 率/1.1) × (1 − 余地) 以下になる (= より甘い)
     comps = [PointComponent("a", D("0.20"))]
     assert optimistic_effective_price(110000, comps, 0.2) <= 110000 * (1 - 0.20 / 1.1) * 0.8 + 1
+
+
+def test_max_purchase_limits_campaign_to_price_band():
+    # 金額帯で率が変わる企画: 5,000〜19,999 円は 4%、20,000 円以上は 7%
+    low = PointComponent("low", D("0.04"), cap=3500, min_purchase=5000, max_purchase=19999)
+    high = PointComponent("high", D("0.07"), cap=3500, min_purchase=20000)
+    assert [b["name"] for b in calc_points(4999, [low, high])[1]] == []
+    assert [b["name"] for b in calc_points(19999, [low, high])[1]] == ["low"]
+    assert [b["name"] for b in calc_points(20000, [low, high])[1]] == ["high"]
+    assert calc_points(110000, [low, high])[0] == 3500                      # 7% は上限 3,500
+
+
+def test_optimistic_price_ignores_max_purchase():
+    # クーポンで 20,500 → 19,500 円に下がると 4% の帯に入る。甘い見積もりはそれを取りこぼさない
+    low = PointComponent("low", D("0.04"), min_purchase=5000, max_purchase=19999)
+    real = evaluate(20500, 1000, 0, [low])["effective_price"]
+    assert optimistic_effective_price(20500, [low], 0.2) <= real

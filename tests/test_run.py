@@ -1,10 +1,14 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
+import arbitrage.run as run_module
 from arbitrage.buyback import Buyback
-from arbitrage.config import BsPlusConfig, CampaignConfig
+from arbitrage.config import BsPlusConfig, CampaignConfig, ConfigError, ManualCoupon, active_config
 from arbitrage.prefilter import max_price_rate
-from arbitrage.run import search_one_jan, search_variants, select_targets
+from arbitrage.run import (load_settings, parse_args, print_config, search_one_jan, search_variants,
+                           select_targets)
 from arbitrage.stores import Store, StoreList
 
 STORES = StoreList({"s1": Store("s1", "s1", "家電", False, Decimal("0.04"), Decimal("0.14"))},
@@ -70,3 +74,75 @@ def test_select_targets_filters_by_price_and_spreads_limit():
     assert len(picked) == 100 and len({b.jan_code for b in picked}) == 100
     assert picked[0].price == 60000 and picked[-1].price < 6000          # 価格帯の上から下まで選ばれる
     assert select_targets(items, None, None, 5000) == select_targets(items, None, None, None)
+
+
+# ---- 設定の読み込み元と実行日 ----
+
+def test_date_defaults_to_none_so_purchase_date_is_used():
+    assert parse_args([]).date is None and parse_args([]).config_file is None
+    args = parse_args(["--date", "2026-10-05", "--config-file", "x.yaml"])
+    assert args.date == date(2026, 10, 5) and str(args.config_file) == "x.yaml"
+
+
+def test_load_settings_from_file(tmp_path):
+    path = tmp_path / "s.yaml"
+    path.write_text("version: 1\npurchase_date: 2026-10-11\n", encoding="utf-8")
+    settings, source = load_settings(path)
+    assert settings.purchase_date == date(2026, 10, 11) and "ファイル" in source and "s.yaml" in source
+
+
+def test_load_settings_from_supabase(monkeypatch):
+    config = {"version": 1, "purchase_date": "2026-10-11"}
+    monkeypatch.setattr(run_module.db, "get_client", lambda: "client")
+    monkeypatch.setattr(run_module.db, "fetch_settings", lambda client: config)
+    settings, source = load_settings(None)
+    assert settings.purchase_date == date(2026, 10, 11) and "Supabase" in source
+    # Supabase に保存された設定が不正なら、どこの設定かを添えて止める
+    monkeypatch.setattr(run_module.db, "fetch_settings", lambda client: {**config, "version": 9})
+    with pytest.raises(ConfigError, match="Supabase の設定.*version"):
+        load_settings(None)
+
+
+def test_load_settings_without_credentials_suggests_config_file(monkeypatch):
+    def no_client():
+        raise run_module.db.DbConfigError("SUPABASE_URL / SUPABASE_KEY が未設定")
+    monkeypatch.setattr(run_module.db, "get_client", no_client)
+    with pytest.raises(ConfigError, match="--config-file"):
+        load_settings(None)
+
+
+def test_check_config_shows_source_date_and_active_items(tmp_path, capsys):
+    path = tmp_path / "s.yaml"
+    path.write_text(
+        "version: 1\npurchase_date: 2026-10-11\n"
+        "common:\n  - {name: card, rate: 0.01, base: tax_included}\n"
+        "campaigns:\n"
+        "  - {name: 日曜, rate: 0.05, dates: [2026-10-04, 2026-10-11]}\n"
+        "  - {name: 加算, rate: 0.02, target: bsplus, dates: [2026-10-05]}\n"
+        "coupons:\n"
+        "  - {name: 手持ち, type: fixed, value: 2000, min_purchase: 60000, target: stores, store_ids: [zz]}\n"
+        "  - {name: 期限切れ, type: percent, value: 0.1, valid_until: 2026-10-05}\n", encoding="utf-8")
+    settings, source = load_settings(path)
+    stores = StoreList(STORES.stores, date(2026, 10, 4), None, "x.xlsx")
+    print_config(settings, active_config(settings, date(2026, 10, 4)), stores, source)
+    out = capsys.readouterr().out
+    assert "s.yaml" in out and "購入予定日 (設定): 2026-10-11 / 実行日: 2026-10-04 ← --date で上書き" in out
+    assert "日曜: 5%" in out and "加算" not in out and "日付外で無効: 1 件" in out
+    assert "手持ち: 2,000円OFF、60,000円以上" in out and "店舗リストに無い店ID: zz" in out
+    assert "期限切れ: 10%OFF" in out and "期間外で無効: 0 件" in out
+    print_config(settings, active_config(settings, date(2026, 10, 11)),
+                 StoreList(STORES.stores, date(2026, 10, 11), None, "x.xlsx"), source)
+    out = capsys.readouterr().out
+    assert "上書き" not in out and "期限切れ" not in out and "期間外で無効: 1 件" in out
+
+
+def test_manual_coupon_keeps_paging_alive():
+    # 手持ちクーポン (15,000 円 OFF) があると、余地 20% では打ち切られる価格帯も読み続ける
+    hits = [hit(8000 + i * 100, f"s1_{i}") for i in range(200)]     # 8,000〜27,900 円
+    coupon = ManualCoupon("big", "fixed", 15000, min_purchase=25000)
+    cfg = CampaignConfig((), (), BsPlusConfig(), coupons=(coupon,))
+    client = FakeClient({"4900000000000": hits})
+    b = Buyback("4900000000000", 9000, "rudeya", "2026-10-04")
+    record = search_one_jan(client, b, cfg, STORES, 0.2, max_price_rate(cfg, STORES))
+    assert len(client.calls) == 4
+    assert any(c["sale_price"] >= 25000 for c in record["candidates"])

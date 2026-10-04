@@ -1,5 +1,4 @@
 import json
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,7 +8,7 @@ from arbitrage.config import BsPlusConfig, Campaign, CampaignConfig
 from arbitrage.finalize import (NOT_PROFITABLE, SKIP_JAN_MISMATCH, SKIP_USED, SKIP_VARIATIONS, build_result,
                                 final_components, same_jan, skip_reason)
 from arbitrage.points import PointComponent
-from arbitrage.stores import Store, StoreList
+from arbitrage.stores import Store
 from arbitrage.yahoo_page import (PageFormatError, coupon_is_valid, extract_page_props, parse_coupon_detail,
                                   parse_item_page, parse_usable_coupons)
 
@@ -27,10 +26,6 @@ def coupons(tag):
 
 def store_for(p, bsplus="0", good=False):
     return Store(p.store_id, p.store_name, "家電", good, D(bsplus), D("0.14"))
-
-
-def stores_of(*stores, labels=None):
-    return StoreList({s.store_id: s for s in stores}, date(2026, 10, 4), labels, "x.xlsx")
 
 
 def candidate(p, buyback_price):
@@ -111,7 +106,7 @@ def test_final_components_use_page_upsell_and_list_bsplus():
                          (Campaign(PointComponent("sun", D("0.05"), cap=3000), "page", page_title="プレミアムな日曜日"),
                           Campaign(PointComponent("none", D("0.5")), "page", page_title="存在しない行")),
                          BsPlusConfig())
-    comps = {c.name: c.rate for c in final_components(s, cfg, stores_of(s), p)}
+    comps = {c.name: c.rate for c in final_components(s, cfg, p)}
     assert comps == {"card": D("0.01"), "sun": D("0.05"), "ストアポイント": D("0.12"), "ボーナスストアPlus": D("0.04")}
 
 
@@ -122,12 +117,13 @@ def test_build_result_with_coupon():
     cfg = CampaignConfig((), (), BsPlusConfig())
     c = coupons("joshin")[0]
     detail = parse_coupon_detail(FIXTURES["joshin"]["couponDetail"], p.item_code)
-    row = build_result(candidate(p, 53000), p, s, cfg, stores_of(s), c, detail)
+    row = build_result(candidate(p, 53000), p, s, cfg, c, detail)
     assert row["sale_price"] == 54780 and row["coupon_discount"] == 2000 and row["points_total"] == 479
     assert row["effective_price"] == 52301 and row["profit"] == 699
     assert row["profit_rate"] == round(699 / 52301, 4)
     assert row["coupon"]["fund_type"] == "STORE" and row["coupon"]["discount"] == 2000
-    assert build_result(candidate(p, 52301), p, s, cfg, stores_of(s), c, detail) is None     # 利益 0 は載せない
+    assert row["coupon"]["source"] == "page"
+    assert build_result(candidate(p, 52301), p, s, cfg, c, detail) is None     # 利益 0 は載せない
 
 
 def test_coupon_is_not_used_when_it_breaks_min_purchase():
@@ -135,7 +131,7 @@ def test_coupon_is_not_used_when_it_breaks_min_purchase():
     p = page("anker")       # 3,990 円、700 円 OFF クーポン
     s = store_for(p)
     cfg = CampaignConfig((), (Campaign(PointComponent("big", D("0.30"), min_purchase=3500), "all"),), BsPlusConfig())
-    row = build_result(candidate(p, 3500), p, s, cfg, stores_of(s), coupons("anker")[0], None)
+    row = build_result(candidate(p, 3500), p, s, cfg, coupons("anker")[0], None)
     assert row["coupon_discount"] == 0 and row["coupon"] is None
     assert row["points_total"] == 1124 and row["effective_price"] == 2866      # 税抜 3,628 × (30% + 1%)
 
@@ -184,3 +180,14 @@ def test_coupon_report_neutralizes_spreadsheet_formulas(tmp_path):
     row = next(csv.DictReader(path.open(encoding="utf-8-sig")))
     assert row["クーポン"].startswith("'=") and row["クーポン名"] == "'+1" and row["利用条件"] == "'@cmd"
     assert row["店舗名"] == "'-店" and row["例: 商品名"] == "普通の商品" and row["最大値引き額"] == "100"
+
+
+def test_public_coupon_expiry_against_purchase_date():
+    from datetime import date
+
+    from arbitrage.yahoo_page import coupon_expired
+    assert coupon_expired("2026/10/6 0:00まで", date(2026, 10, 6))          # 10/6 0:00 で切れる → 10/6 には使えない
+    assert coupon_expired("2026/10/6 0:00まで", date(2026, 10, 11))
+    assert not coupon_expired("2026/10/6 0:00まで", date(2026, 10, 5))
+    assert not coupon_expired("2026/10/31 23:59まで", date(2026, 10, 31))
+    assert not coupon_expired(None, date(2026, 10, 11)) and not coupon_expired("期間限定", date(2026, 10, 11))
