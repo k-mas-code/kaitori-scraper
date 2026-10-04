@@ -168,3 +168,19 @@ def test_coupon_report_groups_by_store_and_coupon():
     assert rows[0]["条件未達の商品数"] == 2 and rows[0]["1個で使えた商品数"] == 0 and rows[0]["最大値引き額"] == 8900
     assert rows[2]["1個で使えた商品数"] == 1 and rows[2]["ログイン"] == "不要"
     assert rows[3]["ログイン"] == "必要" and rows[3]["1個で使えた商品数"] == 4
+
+
+def test_coupon_report_neutralizes_spreadsheet_formulas(tmp_path):
+    import csv
+
+    from arbitrage.coupon_report import write_coupon_report
+    coupon = {"id": "c1", "text": "=HYPERLINK(\"http://evil\",\"x\")", "name": "+1", "condition_text": "@cmd",
+              "limit_text": None, "end_text": None, "item_discount": 100, "achieved": True,
+              "login_required": False, "url": "https://example.com"}
+    record = {"store_id": "s1", "store_name": "-店", "item_name": "普通の商品", "item_url": "https://x",
+              "sale_price": 1000, "coupons_seen": [coupon]}
+    path = tmp_path / "coupons.csv"
+    write_coupon_report([record], path)
+    row = next(csv.DictReader(path.open(encoding="utf-8-sig")))
+    assert row["クーポン"].startswith("'=") and row["クーポン名"] == "'+1" and row["利用条件"] == "'@cmd"
+    assert row["店舗名"] == "'-店" and row["例: 商品名"] == "普通の商品" and row["最大値引き額"] == "100"

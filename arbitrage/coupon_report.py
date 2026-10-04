@@ -13,6 +13,15 @@ COLUMNS = ["店舗ID", "店舗名", "クーポン", "クーポン名", "利用�
            "1個で使えた商品数", "条件未達の商品数", "最大値引き額", "例: 商品名", "例: 販売価格", "例: 商品URL",
            "クーポンURL"]
 ALL_STORES = "(全店共通)"
+# Excel などが数式として実行してしまう先頭文字。商品名やクーポン名は外部サイトの文字列なので無害化する
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_cell(value):
+    """文字列のセルが数式として解釈されないよう、危険な先頭文字の前に ' を付ける"""
+    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
+        return "'" + value
+    return value
 
 
 def build_coupon_rows(page_records: list[dict]) -> list[dict]:
@@ -52,5 +61,5 @@ def write_coupon_report(page_records: list[dict], path: Path) -> list[dict]:
     with path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({key: _safe_cell(value) for key, value in row.items()} for row in rows)
     return rows
