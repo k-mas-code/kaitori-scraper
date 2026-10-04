@@ -1,0 +1,1539 @@
+{
+ "digimart": {
+  "pageProps": {
+   "item": {
+    "srid": "kd0262b",
+    "sellerManagedItemId": "kd0262b",
+    "name": "任天堂 Nintendo Switch 有機ELモデル [ネオンブルー・ネオンレッド] [HEG-S-KABAA] 【新品・国内正規品・訳あり：箱潰れ】【返品不可商品】",
+    "url": "https://store.shopping.yahoo.co.jp/digimart-shop/kd0262b.html",
+    "applicablePrice": 58018,
+    "taxExcludedApplicablePrice": 52744,
+    "janCode": "4902370548501",
+    "isUsed": false,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": null,
+     "maxPurchaseQuantity": null,
+     "quantity": 1,
+     "stockTextType": "EmptyString",
+     "stockText": "",
+     "quantitySupplementTextList": [],
+     "quantitySupplementTipTextList": []
+    },
+    "individualItemList": [],
+    "subscriptionPrice": null,
+    "productCategoryId": "44476",
+    "genreCategoryIds": [
+     1,
+     2511,
+     2161,
+     48838,
+     48840
+    ],
+    "brandId": "22545",
+    "predictionBrandId": "2358",
+    "itemTagList": [],
+    "mallItemTagList": [],
+    "delivery": {
+     "isGoodDelivery": false
+    }
+   },
+   "seller": {
+    "id": "digimart-shop",
+    "name": "カメラ・レンズ・家電のDigiMart",
+    "goodStoreBadgeType": 0,
+    "isLineBotRelation": true
+   },
+   "point": {
+    "totalPointRatio": 4,
+    "totalPoint": 2135,
+    "totalRatioWithEntry": 13,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 290
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 527
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 1318
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 2637
+       },
+       {
+        "title": "ボーナスストアPlus ＋4％【対象ストア限定】",
+        "ratio": 4,
+        "point": 2109
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 1054
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": []
+    }
+   }
+  }
+ },
+ "joshin": {
+  "pageProps": {
+   "item": {
+    "srid": "5025155106518-21-46756",
+    "sellerManagedItemId": "5025155106518-21-46756",
+    "name": "ダイソン サイクロン式スティッククリーナー 充電式 パワーブラシ ニッケル/ アイアン/ ニッケル (掃除機) Dyson V12 Detect Slim Fluffy SV46FF 返品種別A",
+    "url": "https://store.shopping.yahoo.co.jp/joshin/5025155106518-21-46756.html",
+    "applicablePrice": 54780,
+    "taxExcludedApplicablePrice": 49800,
+    "janCode": "5025155106518",
+    "isUsed": false,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": 1,
+     "maxPurchaseQuantity": 1,
+     "quantity": 98,
+     "stockTextType": "EmptyString",
+     "stockText": "",
+     "quantitySupplementTextList": [
+      "お一人様、1点限り"
+     ],
+     "quantitySupplementTipTextList": [
+      "1点まで購入できます。"
+     ]
+    },
+    "individualItemList": [],
+    "subscriptionPrice": null,
+    "productCategoryId": "31605",
+    "genreCategoryIds": [
+     1,
+     2505,
+     5300,
+     583,
+     26216
+    ],
+    "brandId": "1109",
+    "predictionBrandId": "1109",
+    "itemTagList": [],
+    "mallItemTagList": [],
+    "delivery": {
+     "isGoodDelivery": false
+    }
+   },
+   "seller": {
+    "id": "joshin",
+    "name": "Joshin web",
+    "goodStoreBadgeType": 0,
+    "isLineBotRelation": true
+   },
+   "point": {
+    "totalPointRatio": 4,
+    "totalPoint": 2016,
+    "totalRatioWithEntry": 9,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 273
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 498
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 1245
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 2490
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 996
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      },
+      {
+       "id": "ZDljMzUzMDA3OTIyYWJmOGM0NzQyZDI2MmRi",
+       "content": "対象商品2,000円OFFクーポン",
+       "couponName": "当店指定 家電に使えるクーポン",
+       "discountPriceLimitText": null,
+       "itemDiscountPrice": 2000,
+       "useConditionText": null,
+       "useEndDateText": "2026/10/6 0:00まで",
+       "detailUrl": "https://shopping.yahoo.co.jp/coupon/kaden/ZDljMzUzMDA3OTIyYWJmOGM0NzQyZDI2MmRi",
+       "buttonType": "Normal"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": []
+    }
+   }
+  },
+  "couponDetail": {
+   "data": {
+    "coupon": {
+     "id": "ZDljMzUzMDA3OTIyYWJmOGM0NzQyZDI2MmRi",
+     "title": "当店指定 家電に使えるクーポン",
+     "fundType": "STORE",
+     "store": {
+      "id": "joshin"
+     },
+     "discount": {
+      "type": 1,
+      "price": 2000,
+      "ratio": null,
+      "priceLimit": null
+     },
+     "orderCondition": {
+      "priceMin": null,
+      "priceMax": null,
+      "countMin": null
+     },
+     "usePeriod": {
+      "startTime": 1790953200,
+      "endTime": 1791212400,
+      "isNowOn": true
+     },
+     "itemModule": {
+      "targetItemList": [
+       {
+        "smid": "4971660966219-22-26606"
+       },
+       {
+        "smid": "4549980765333-21-22601"
+       },
+       {
+        "smid": "4571526732714-21-373"
+       },
+       {
+        "smid": "4571526732769-21-45217"
+       },
+       {
+        "smid": "4571526732752-21-45210"
+       },
+       {
+        "smid": "4571526732745-21-45210"
+       },
+       {
+        "smid": "4571526732738-21-373"
+       },
+       {
+        "smid": "4571526732721-21-373"
+       },
+       {
+        "smid": "4571526730109-21-22603"
+       },
+       {
+        "smid": "4066529012616-21-21587"
+       },
+       {
+        "smid": "4562337507820-21-51983"
+       },
+       {
+        "smid": "4550556180993-21-45210"
+       },
+       {
+        "smid": "4550556181006-21-45210"
+       },
+       {
+        "smid": "4589449353589-21-45214"
+       },
+       {
+        "smid": "4904530136863-21-45217"
+       },
+       {
+        "smid": "4549873229225-21-45218"
+       },
+       {
+        "smid": "4549873229218-21-45218"
+       },
+       {
+        "smid": "4549873229201-21-45217"
+       },
+       {
+        "smid": "4549873229195-21-45217"
+       },
+       {
+        "smid": "4904530136856-21-45217"
+       },
+       {
+        "smid": "4904530145155-21-22061"
+       },
+       {
+        "smid": "4904530145162-21-22062"
+       },
+       {
+        "smid": "4951272035947-22-28300"
+       },
+       {
+        "smid": "4951272035930-22-28300"
+       },
+       {
+        "smid": "4906128516736-22-28300"
+       },
+       {
+        "smid": "4582678514677-21-373"
+       },
+       {
+        "smid": "4906128516637-22-28300"
+       },
+       {
+        "smid": "4550556178402-21-373"
+       },
+       {
+        "smid": "4582678514691-21-45214"
+       },
+       {
+        "smid": "4906128516538-22-28300"
+       },
+       {
+        "smid": "4582678514707-21-45214"
+       },
+       {
+        "smid": "4562337507615-21-51983"
+       },
+       {
+        "smid": "4974019121192-22-6253"
+       },
+       {
+        "smid": "4951272035893-22-590"
+       },
+       {
+        "smid": "4985206035192-22-1393"
+       },
+       {
+        "smid": "4985206035185-22-1392"
+       },
+       {
+        "smid": "4906128516439-22-28300"
+       },
+       {
+        "smid": "4906128516330-22-28300"
+       },
+       {
+        "smid": "4974305221896-22-9799"
+       },
+       {
+        "smid": "4582678514714-21-45215"
+       },
+       {
+        "smid": "4571526733926-21-45214"
+       },
+       {
+        "smid": "5025155106518-21-46756"
+       },
+       {
+        "smid": "0810150545616-21-21986"
+       },
+       {
+        "smid": "4571637980974-21-45211"
+       },
+       {
+        "smid": "4571637980981-21-45211"
+       },
+       {
+        "smid": "0810150544824-21-21986"
+       },
+       {
+        "smid": "4580046471607-22-39365"
+       },
+       {
+        "smid": "4573535490029-22-39347"
+       },
+       {
+        "smid": "4906128593034-22-48838"
+       },
+       {
+        "smid": "4906128592938-22-48838"
+       },
+       {
+        "smid": "4571526734121-21-75334"
+       },
+       {
+        "smid": "4571637980165-21-373"
+       },
+       {
+        "smid": "4571526731038-21-67123"
+       },
+       {
+        "smid": "5025155082720-21-46755"
+       },
+       {
+        "smid": "4573637013843-21-26785"
+       },
+       {
+        "smid": "4573637013850-21-21960"
+       },
+       {
+        "smid": "4573637038549-21-45211"
+       },
+       {
+        "smid": "4573637019289-21-45217"
+       },
+       {
+        "smid": "4573637019296-21-45217"
+       },
+       {
+        "smid": "4573637019302-21-45217"
+       },
+       {
+        "smid": "4573637019319-21-45218"
+       },
+       {
+        "smid": "4573637019326-21-45218"
+       },
+       {
+        "smid": "4573637019395-21-373"
+       },
+       {
+        "smid": "4573637019401-21-373"
+       },
+       {
+        "smid": "4573637038532-21-45211"
+       },
+       {
+        "smid": "4906128590330-22-590"
+       },
+       {
+        "smid": "4571526734381-21-45217"
+       },
+       {
+        "smid": "4582678514660-21-45212"
+       },
+       {
+        "smid": "4582678514653-21-45211"
+       },
+       {
+        "smid": "4582678514646-21-45211"
+       },
+       {
+        "smid": "4582678514547-21-18846"
+       },
+       {
+        "smid": "4571526735647-21-18846"
+       },
+       {
+        "smid": "4571526734404-21-45211"
+       },
+       {
+        "smid": "4582678514530-21-18846"
+       },
+       {
+        "smid": "4571526734152-21-72046"
+       },
+       {
+        "smid": "4571526734374-21-45217"
+       },
+       {
+        "smid": "4582678514554-21-18846"
+       },
+       {
+        "smid": "4571526734398-21-45211"
+       },
+       {
+        "smid": "4571526731007-21-18846"
+       },
+       {
+        "smid": "4582678514141-21-45217"
+       },
+       {
+        "smid": "4934257305396-22-10956"
+       },
+       {
+        "smid": "4582678514158-21-45217"
+       },
+       {
+        "smid": "4571526732776-21-45217"
+       },
+       {
+        "smid": "4573637038525-21-45217"
+       },
+       {
+        "smid": "4571526730130-21-26846"
+       },
+       {
+        "smid": "4571526731014-21-18846"
+       },
+       {
+        "smid": "4571526730581-21-18846"
+       },
+       {
+        "smid": "4571526730574-21-18846"
+       },
+       {
+        "smid": "4582678514684-21-373"
+       },
+       {
+        "smid": "4906128516835-22-28300"
+       },
+       {
+        "smid": "4571526730147-21-26847"
+       },
+       {
+        "smid": "4906128516934-22-28300"
+       },
+       {
+        "smid": "4054278688220-21-29772"
+       },
+       {
+        "smid": "4550414324675-22-26606"
+       },
+       {
+        "smid": "4582678513311-21-18846"
+       },
+       {
+        "smid": "4906128547136-22-590"
+       },
+       {
+        "smid": "4934257305297-22-10956"
+       },
+       {
+        "smid": "4054278247922-21-28096"
+       }
+      ]
+     }
+    }
+   }
+  }
+ },
+ "dyson": {
+  "pageProps": {
+   "item": {
+    "srid": "560473-01",
+    "sellerManagedItemId": "560473-01",
+    "name": "ドライヤー ヘアドライヤー ダイソン 【同時購入割引対象/レビューキャンペーン】 Dyson Supersonic Nural Shine ダイソンドライヤー セラミックピンク HD16VLP",
+    "url": "https://store.shopping.yahoo.co.jp/dyson/560473-01.html",
+    "applicablePrice": 53799,
+    "taxExcludedApplicablePrice": 48909,
+    "janCode": "5025155103432",
+    "isUsed": false,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": 1,
+     "maxPurchaseQuantity": 1,
+     "quantity": 3,
+     "stockTextType": "EmptyString",
+     "stockText": "",
+     "quantitySupplementTextList": [
+      "お一人様、1点限り"
+     ],
+     "quantitySupplementTipTextList": [
+      "1点まで購入できます。"
+     ]
+    },
+    "individualItemList": [],
+    "subscriptionPrice": null,
+    "productCategoryId": "1998",
+    "genreCategoryIds": [
+     1,
+     2505,
+     1987,
+     1997,
+     1999
+    ],
+    "brandId": "22774",
+    "predictionBrandId": "1109",
+    "itemTagList": [
+     "bakugai202510"
+    ],
+    "mallItemTagList": [
+     "movie_5day",
+     "movie_dailybonus",
+     "movie_blackfriday",
+     "brand_261009_search"
+    ],
+    "delivery": {
+     "isGoodDelivery": false
+    }
+   },
+   "seller": {
+    "id": "dyson",
+    "name": "Dyson公式Yahoo!ショッピング店",
+    "goodStoreBadgeType": 0,
+    "isLineBotRelation": false
+   },
+   "point": {
+    "totalPointRatio": 15,
+    "totalPoint": 7359,
+    "totalRatioWithEntry": 24,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 268
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 489
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 1222
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 2445
+       },
+       {
+        "title": "ボーナスストアPlus ＋4％【対象ストア限定】",
+        "ratio": 4,
+        "point": 1956
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 978
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": [
+      {
+       "id": "NWM2MzMwMzVmNGE1MGI4Nzg1MWIzMjJjMWIw",
+       "content": "対象商品8,900円OFFクーポン",
+       "couponName": "Dyson公式Yahoo!ショッピング店で使える同時購入割引クーポン（HD16VLP）",
+       "discountPriceLimitText": null,
+       "itemDiscountPrice": 8900,
+       "useConditionText": "対象商品2個以上の購入",
+       "useEndDateText": "2026/11/1 0:00まで",
+       "detailUrl": "https://shopping.yahoo.co.jp/coupon/kaden/NWM2MzMwMzVmNGE1MGI4Nzg1MWIzMjJjMWIw",
+       "buttonType": "Normal"
+      },
+      {
+       "id": "ZmJmNDY1ZGRlNzM0YjY5Y2E0NjYyMzNiODM4",
+       "content": "対象商品10％OFFクーポン",
+       "couponName": "Dyson公式Yahoo!ショッピング店で使える同時購入10%OFFクーポン",
+       "discountPriceLimitText": null,
+       "itemDiscountPrice": 5379,
+       "useConditionText": "対象商品2個以上の購入",
+       "useEndDateText": "2026/11/1 0:00まで",
+       "detailUrl": "https://shopping.yahoo.co.jp/coupon/kaden/ZmJmNDY1ZGRlNzM0YjY5Y2E0NjYyMzNiODM4",
+       "buttonType": "Normal"
+      }
+     ]
+    }
+   }
+  },
+  "couponDetail": {
+   "data": {
+    "coupon": {
+     "id": "ZmJmNDY1ZGRlNzM0YjY5Y2E0NjYyMzNiODM4",
+     "title": "Dyson公式Yahoo!ショッピング店で使える同時購入10%OFFクーポン",
+     "fundType": "STORE",
+     "store": {
+      "id": "dyson"
+     },
+     "discount": {
+      "type": 2,
+      "price": null,
+      "ratio": 10,
+      "priceLimit": null
+     },
+     "orderCondition": {
+      "priceMin": null,
+      "priceMax": null,
+      "countMin": 2
+     },
+     "usePeriod": {
+      "startTime": 1790780400,
+      "endTime": 1793458800,
+      "isNowOn": true
+     },
+     "itemModule": {
+      "targetItemList": [
+       {
+        "smid": "967478-05"
+       },
+       {
+        "smid": "965272-01"
+       },
+       {
+        "smid": "970938-01"
+       },
+       {
+        "smid": "972214-04"
+       },
+       {
+        "smid": "971518-04"
+       },
+       {
+        "smid": "971427-01"
+       },
+       {
+        "smid": "971517-01"
+       },
+       {
+        "smid": "971634-01"
+       },
+       {
+        "smid": "970443-01"
+       },
+       {
+        "smid": "968999-01"
+       },
+       {
+        "smid": "968683-04"
+       },
+       {
+        "smid": "970718-01"
+       },
+       {
+        "smid": "586364-01"
+       },
+       {
+        "smid": "454864-01"
+       },
+       {
+        "smid": "499044-01"
+       },
+       {
+        "smid": "593813-01"
+       },
+       {
+        "smid": "560473-01"
+       },
+       {
+        "smid": "637631-01"
+       },
+       {
+        "smid": "974815-01"
+       },
+       {
+        "smid": "965003-07"
+       },
+       {
+        "smid": "971618-02"
+       },
+       {
+        "smid": "970774-01"
+       },
+       {
+        "smid": "971062-05"
+       },
+       {
+        "smid": "974281-01"
+       },
+       {
+        "smid": "973969-01"
+       },
+       {
+        "smid": "967813-04"
+       },
+       {
+        "smid": "972522-02"
+       },
+       {
+        "smid": "972486-01"
+       },
+       {
+        "smid": "965824-01"
+       },
+       {
+        "smid": "967834-06"
+       },
+       {
+        "smid": "969352-01"
+       },
+       {
+        "smid": "967197-13"
+       },
+       {
+        "smid": "965661-01"
+       },
+       {
+        "smid": "972203-01"
+       },
+       {
+        "smid": "965824-07"
+       },
+       {
+        "smid": "972205-01"
+       },
+       {
+        "smid": "973703-01"
+       },
+       {
+        "smid": "965432-01"
+       },
+       {
+        "smid": "969082-02"
+       },
+       {
+        "smid": "970443-02"
+       },
+       {
+        "smid": "969509-02"
+       },
+       {
+        "smid": "965363-01"
+       },
+       {
+        "smid": "973267-01"
+       },
+       {
+        "smid": "969350-04"
+       },
+       {
+        "smid": "971313-04"
+       },
+       {
+        "smid": "969082-01"
+       },
+       {
+        "smid": "973474-01"
+       },
+       {
+        "smid": "966538-01"
+       },
+       {
+        "smid": "971178-01"
+       },
+       {
+        "smid": "972426-01"
+       },
+       {
+        "smid": "967826-03"
+       },
+       {
+        "smid": "974527-01"
+       }
+      ]
+     }
+    }
+   }
+  }
+ },
+ "anker": {
+  "pageProps": {
+   "item": {
+    "srid": "a1257",
+    "sellerManagedItemId": "a1257",
+    "name": "Anker Power Bank (10000mAh, 22.5W) (モバイルバッテリー 最大22.5W出力 USB-C & USB-C ケーブル付属 ディスプレイ搭載) USB PD クーポン対象",
+    "url": "https://store.shopping.yahoo.co.jp/ankerdirect/a1257.html",
+    "applicablePrice": 3990,
+    "taxExcludedApplicablePrice": 3628,
+    "janCode": "4571411219498",
+    "isUsed": false,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": null,
+     "maxPurchaseQuantity": 3,
+     "quantity": null,
+     "stockTextType": "EmptyString",
+     "stockText": "",
+     "quantitySupplementTextList": [
+      "お一人様、3点限り"
+     ],
+     "quantitySupplementTipTextList": [
+      "3点まで購入できます。"
+     ]
+    },
+    "individualItemList": [
+     {
+      "skuId": "A1257012"
+     },
+     {
+      "skuId": "A1257022"
+     },
+     {
+      "skuId": "A12570V2"
+     },
+     {
+      "skuId": "A1257052"
+     },
+     {
+      "skuId": "A1257032"
+     }
+    ],
+    "subscriptionPrice": null,
+    "productCategoryId": "31786",
+    "genreCategoryIds": [
+     1,
+     2502,
+     38346,
+     38351
+    ],
+    "brandId": "54687",
+    "predictionBrandId": "54687",
+    "itemTagList": [],
+    "mallItemTagList": [
+     "movie_5day",
+     "movie_dailybonus"
+    ],
+    "delivery": {
+     "isGoodDelivery": true
+    }
+   },
+   "seller": {
+    "id": "ankerdirect",
+    "name": "AnkerDirect",
+    "goodStoreBadgeType": 2,
+    "isLineBotRelation": false
+   },
+   "point": {
+    "totalPointRatio": 4,
+    "totalPoint": 145,
+    "totalRatioWithEntry": 13,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 19
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 36
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 90
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 181
+       },
+       {
+        "title": "ボーナスストアPlus ＋9％【対象ストア限定】",
+        "ratio": 9,
+        "point": 326
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 72
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      },
+      {
+       "id": "NzM2NjNhOGJkMTllZWNmMjgzMjEwN2FhY2E4",
+       "content": "対象商品700円OFFクーポン",
+       "couponName": "【Anker】充電関連製品に使える700円OFFクーポン",
+       "discountPriceLimitText": null,
+       "itemDiscountPrice": 700,
+       "useConditionText": null,
+       "useEndDateText": "2026/10/6 0:00まで",
+       "detailUrl": "https://shopping.yahoo.co.jp/coupon/others/NzM2NjNhOGJkMTllZWNmMjgzMjEwN2FhY2E4",
+       "buttonType": "Normal"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": []
+    }
+   }
+  },
+  "couponDetail": {
+   "data": {
+    "coupon": {
+     "id": "NzM2NjNhOGJkMTllZWNmMjgzMjEwN2FhY2E4",
+     "title": "【Anker】充電関連製品に使える700円OFFクーポン",
+     "fundType": "STORE",
+     "store": {
+      "id": "ankerdirect"
+     },
+     "discount": {
+      "type": 1,
+      "price": 700,
+      "ratio": null,
+      "priceLimit": null
+     },
+     "orderCondition": {
+      "priceMin": null,
+      "priceMax": null,
+      "countMin": null
+     },
+     "usePeriod": {
+      "startTime": 1790866800,
+      "endTime": 1791212400,
+      "isNowOn": true
+     },
+     "itemModule": {
+      "targetItemList": [
+       {
+        "smid": "a1688"
+       },
+       {
+        "smid": "a1257"
+       },
+       {
+        "smid": "b2348-1"
+       },
+       {
+        "smid": "a1614"
+       }
+      ]
+     }
+    }
+   }
+  }
+ },
+ "try3": {
+  "pageProps": {
+   "item": {
+    "srid": "5025155085011",
+    "sellerManagedItemId": "5025155085011",
+    "name": "ダイソン 掃除機 Dyson V12s Detect Slim Submarine サイクロン式 コードレスクリーナー ダイソン掃除機 ダイソン クリーナ 国内正規品 SV46 SU SV46SU",
+    "url": "https://store.shopping.yahoo.co.jp/try3/5025155085011.html",
+    "applicablePrice": 64870,
+    "taxExcludedApplicablePrice": 58973,
+    "janCode": "5025155085011",
+    "isUsed": false,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": 1,
+     "maxPurchaseQuantity": null,
+     "quantity": 8,
+     "stockTextType": "FewNumber",
+     "stockText": "残り8点",
+     "quantitySupplementTextList": [],
+     "quantitySupplementTipTextList": []
+    },
+    "individualItemList": [],
+    "subscriptionPrice": null,
+    "productCategoryId": "31605",
+    "genreCategoryIds": [
+     1,
+     2505,
+     5300,
+     583,
+     26216
+    ],
+    "brandId": "1109",
+    "predictionBrandId": "1109",
+    "itemTagList": [
+     "bakugai202607"
+    ],
+    "mallItemTagList": [],
+    "delivery": {
+     "isGoodDelivery": true
+    }
+   },
+   "seller": {
+    "id": "try3",
+    "name": "トライスリー",
+    "goodStoreBadgeType": 2,
+    "isLineBotRelation": true
+   },
+   "point": {
+    "totalPointRatio": 5,
+    "totalPoint": 2977,
+    "totalRatioWithEntry": 10,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 324
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 589
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 1474
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 2948
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 1179
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": []
+    }
+   }
+  }
+ },
+ "kksshop": {
+  "pageProps": {
+   "item": {
+    "srid": "13pro-lcd-01",
+    "sellerManagedItemId": "13Pro-LCD-01",
+    "name": "iPhone13Pro iphone 13 Pro 液晶パネル / フロントパネル 画面 液晶 パネル ガラス 修理 交換「13Pro-屏01」",
+    "url": "https://store.shopping.yahoo.co.jp/kksshop/13pro-lcd-01.html",
+    "applicablePrice": 7460,
+    "taxExcludedApplicablePrice": 6782,
+    "janCode": "",
+    "isUsed": false,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": null,
+     "maxPurchaseQuantity": null,
+     "quantity": 999,
+     "stockTextType": "Many",
+     "stockText": "在庫あり",
+     "quantitySupplementTextList": [],
+     "quantitySupplementTipTextList": []
+    },
+    "individualItemList": [],
+    "subscriptionPrice": null,
+    "productCategoryId": "31765",
+    "genreCategoryIds": [
+     1,
+     2502,
+     38338,
+     38340
+    ],
+    "brandId": "",
+    "predictionBrandId": "",
+    "itemTagList": [],
+    "mallItemTagList": [],
+    "delivery": {
+     "isGoodDelivery": false
+    }
+   },
+   "seller": {
+    "id": "kksshop",
+    "name": "KKS ヤフー店",
+    "goodStoreBadgeType": 0,
+    "isLineBotRelation": true
+   },
+   "point": {
+    "totalPointRatio": 18,
+    "totalPoint": 1223,
+    "totalRatioWithEntry": 23,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 37
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 67
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 169
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 339
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 135
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": []
+    }
+   }
+  }
+ },
+ "janpara": {
+  "pageProps": {
+   "item": {
+    "srid": "105041292-232",
+    "sellerManagedItemId": "105041292-232",
+    "name": "【中古】Nintendo Switch 本体 (有機ELモデル) HEG-S-KABAA ネオンブルー・ネオンレッド 【2021年10月】【大須アメ横】保証期間１ヶ月【ランクB】",
+    "url": "https://store.shopping.yahoo.co.jp/janpara/105041292-232.html",
+    "applicablePrice": 29980,
+    "taxExcludedApplicablePrice": 27255,
+    "janCode": "4902370548501",
+    "isUsed": true,
+    "isOnSale": true,
+    "stock": {
+     "isAvailable": true,
+     "isReserveOverdraft": false,
+     "isStockVaried": false,
+     "minPurchaseQuantity": null,
+     "maxPurchaseQuantity": null,
+     "quantity": 1,
+     "stockTextType": "FewNumber",
+     "stockText": "残り1点",
+     "quantitySupplementTextList": [],
+     "quantitySupplementTipTextList": []
+    },
+    "individualItemList": [],
+    "subscriptionPrice": null,
+    "productCategoryId": "17312",
+    "genreCategoryIds": [
+     1,
+     2511,
+     2161,
+     65503
+    ],
+    "brandId": "",
+    "predictionBrandId": "2358",
+    "itemTagList": [],
+    "mallItemTagList": [],
+    "delivery": {
+     "isGoodDelivery": false
+    }
+   },
+   "seller": {
+    "id": "janpara",
+    "name": "じゃんぱら Yahoo!店",
+    "goodStoreBadgeType": 0,
+    "isLineBotRelation": false
+   },
+   "point": {
+    "totalPointRatio": 4,
+    "totalPoint": 1102,
+    "totalRatioWithEntry": 9,
+    "promotionType": "Login",
+    "currentCampaignList": [
+     {
+      "title": "毎日5%対象",
+      "partsCampaignList": [
+       {
+        "title": "＜税込決済額対象＞PayPay残高",
+        "ratio": 0.5,
+        "point": 149
+       },
+       {
+        "title": "ストアポイント",
+        "ratio": 1,
+        "point": 272
+       },
+       {
+        "title": "LINEと連携で毎日もらえる【支払方法指定あり】",
+        "ratio": 2.5,
+        "point": 681
+       }
+      ]
+     }
+    ],
+    "conditionalCampaignList": [
+     {
+      "title": "",
+      "partsCampaignList": [
+       {
+        "title": "プレミアムな日曜日 ＋5％【対象ストア限定】",
+        "ratio": 5,
+        "point": 1362
+       },
+       {
+        "title": "LYPプレミアム会員 ＋2%【支払方法指定あり】",
+        "ratio": 2,
+        "point": 545
+       }
+      ]
+     }
+    ]
+   },
+   "page": {
+    "crumb": "FIXTURE_CRUMB"
+   },
+   "postage": {
+    "fee": 0
+   },
+   "cartButton": {
+    "displayState": "Active"
+   }
+  },
+  "coupons": {
+   "normal": {
+    "conditionAchievedCoupons": {
+     "items": [
+      {
+       "id": "newappcoupon",
+       "content": "ストア内全品50%OFFクーポン",
+       "couponName": null,
+       "discountPriceLimitText": "500円まで",
+       "itemDiscountPrice": 0,
+       "useConditionText": "お買い物が初めての方のアプリ利用",
+       "useEndDateText": null,
+       "detailUrl": "https://shopping.yahoo.co.jp/promotion/coupon/limited/debut_app/",
+       "buttonType": "Login"
+      }
+     ]
+    },
+    "conditionNotAchievedCoupons": {
+     "items": []
+    }
+   }
+  }
+ }
+}
