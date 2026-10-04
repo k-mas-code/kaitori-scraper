@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 
 from .buyback import Buyback
-from .config import (TARGET_ALL, TARGET_BSPLUS, TARGET_GOOD_STORE, TARGET_PAGE, Campaign,
-                     CampaignConfig)
+from .config import (TARGET_ALL, TARGET_BSPLUS, TARGET_BSPLUS_GOOD, TARGET_GOOD_STORE, TARGET_PAGE,
+                     TARGET_STORES, Campaign, CampaignConfig, ManualCoupon)
+from .coupons import best_manual_discount, discount_upper_bound
 from .points import TAX_INCLUDED, PointComponent, optimistic_effective_price
 from .stores import Store, StoreList
 
@@ -24,50 +24,39 @@ def campaign_applies(campaign: Campaign, store: Store, page_titles: list[str] | 
         return True
     if target == TARGET_BSPLUS:
         return store.bsplus_rate > 0
+    if target == TARGET_BSPLUS_GOOD:
+        return store.bsplus_rate > 0 and store.good_store
     if target == TARGET_GOOD_STORE:
         return store.good_store
     if target == TARGET_PAGE:
         if page_titles is None:
             return True
         return any(campaign.page_title in title for title in page_titles)
-    return store.store_id in target
+    if target == TARGET_STORES:
+        return store.store_id in campaign.store_ids
+    raise ValueError(f"未対応の target: {target!r}")
 
 
-def global_bonus(store: Store, labels: str | None, stacks: bool) -> Decimal:
-    """全体加算日にボーナスストアPlus枠の店へ足す率。
-
-    店舗リスト 1 行目の表記: "+2" = 枠のある店は +2% / "+2/+3" = さらに優良ストアは +3%。
-    stacks=True は優良ストアの +3% を +2% に重ねる (計 +5%)、False は +3% のみ。
-    """
-    numbers = sorted(int(n) for n in re.findall(r"\+(\d+)", labels or ""))
-    if not numbers or store.bsplus_rate <= 0:
-        return Decimal(0)
-    if len(numbers) == 1 or not store.good_store:
-        return Decimal(numbers[0]) / 100
-    return Decimal(sum(numbers) if stacks else numbers[-1]) / 100
-
-
-def bsplus_component(store: Store, cfg: CampaignConfig, labels: str | None,
-                     stacks: bool) -> PointComponent | None:
+def bsplus_component(store: Store, cfg: CampaignConfig) -> PointComponent | None:
+    """ボーナスストアPlus (率は店舗リストの実行日の枠)。全体加算日の +2% / +3% は campaigns 側で持つ"""
     if store.bsplus_rate <= 0:
         return None
-    return PointComponent(name=BSPLUS_NAME, rate=store.bsplus_rate + global_bonus(store, labels, stacks),
-                          cap=cfg.bsplus.cap)
+    return PointComponent(name=BSPLUS_NAME, rate=store.bsplus_rate, cap=cfg.bsplus.cap)
 
 
-def optimistic_components(store: Store, cfg: CampaignConfig, stores: StoreList) -> list[PointComponent]:
-    """その店で付きうる枠をすべて並べる (上乗せ率は店の最大値、全体加算は重ねて付く前提)"""
+def optimistic_components(store: Store, cfg: CampaignConfig) -> list[PointComponent]:
+    """その店で付きうる枠をすべて並べる (上乗せ率は店の最大値)"""
     components = list(cfg.common)
     components += [c.component for c in cfg.campaigns if campaign_applies(c, store, None)]
     components.append(PointComponent(name=STORE_POINT_NAME, rate=STORE_POINT_BASE + store.max_upsell))
-    bsplus = bsplus_component(store, cfg, stores.global_bonus_labels, stacks=True)
+    bsplus = bsplus_component(store, cfg)
     if bsplus:
         components.append(bsplus)
     return components
 
 
 def max_price_rate(cfg: CampaignConfig, stores: StoreList) -> float:
-    """どの店でも超えない「税込価格に対する付与率」(上限・条件を無視)。
+    """どの店でも超えない「税込価格に対する付与率」(上限・条件・対象を無視)。
 
     検索結果 (価格昇順) のページ送り打ち切りに使う。税抜ベースの枠は 率/1.1、税込ベースの枠は率そのまま。
     """
@@ -75,17 +64,25 @@ def max_price_rate(cfg: CampaignConfig, stores: StoreList) -> float:
         return float(c.rate) if c.base == TAX_INCLUDED else float(c.rate) / 1.1
 
     configured = sum(per_price(c) for c in cfg.common) + sum(per_price(c.component) for c in cfg.campaigns)
-    best_store = max(
-        (s.max_upsell + s.bsplus_rate + global_bonus(s, stores.global_bonus_labels, stacks=True)
-         for s in stores.stores.values()), default=Decimal(0))
+    best_store = max((s.max_upsell + s.bsplus_rate for s in stores.stores.values()), default=Decimal(0))
     return configured + float(STORE_POINT_BASE + best_store) / 1.1
 
 
-def price_can_never_pass(price: int, buyback_price: int, price_rate: float, coupon_margin: float) -> bool:
-    """この価格以上の商品は、どの店でも絞り込みを通らないか (価格昇順の打ち切り判定)"""
-    # optimistic_effective_price の下限。税抜価格の端数 (最大 +1 円) の分だけ余裕を持たせる
-    floor_price = price * (1 - coupon_margin - price_rate) - 2
-    return floor_price >= buyback_price
+def price_can_never_pass(price: int, buyback_price: int, price_rate: float, coupon_margin: float,
+                         coupons: tuple[ManualCoupon, ...] = ()) -> bool:
+    """この価格以上の商品は、どの店でも絞り込みを通らないか (価格昇順の打ち切り判定)。
+
+    optimistic_effective_price の下限で判定する。税抜価格の端数 (最大 +1 円) の分だけ余裕を持たせる。
+    """
+    if price * (1 - coupon_margin - price_rate) - 2 < buyback_price:
+        return False
+    # 手持ちクーポンは、この先それが使える最初の価格 (最低購入額) で見る。店の条件は無視する。
+    # そこで下限が買取価格以上なら、それより高い価格でも下回らない (値引きは定額か上限つきの定率なので)
+    for coupon in coupons:
+        start = max(price, coupon.min_purchase)
+        if start * (1 - price_rate) - discount_upper_bound(coupon, start) - 2 < buyback_price:
+            return False
+    return True
 
 
 def top_genre(hit: dict) -> str | None:
@@ -111,7 +108,8 @@ def select_candidates(hits: list[dict], buyback: Buyback, cfg: CampaignConfig,
             continue
         seen.add((store.store_id, code))
         optimistic = optimistic_effective_price(
-            price, optimistic_components(store, cfg, stores), coupon_margin)
+            price, optimistic_components(store, cfg), coupon_margin,
+            best_manual_discount(cfg.coupons, store.store_id, price))
         if optimistic >= buyback.price:
             continue
         candidates.append({

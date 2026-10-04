@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 
 import requests
@@ -231,6 +232,25 @@ def parse_coupon_detail(props: dict, item_code: str) -> dict:
         # 載ったり載らなかったりする) ので、対象かどうかの判定には使わない
         "item_in_targets": any(t.get("smid") == item_code for t in targets) if targets else None,
     }
+
+
+COUPON_END_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2})\s*まで")
+
+
+def coupon_expired(end_text: str | None, day: date) -> bool:
+    """クーポンの利用期限 ("2026/10/6 0:00まで") が、購入予定日 day の開始時刻以前に切れるか。
+
+    期限の表示が無い・読めないものは、切れていない扱いにする (結果の end_text で確認できる)。
+    """
+    m = COUPON_END_RE.search(end_text or "")
+    if not m:
+        return False
+    year, month, dom, hour, minute = (int(g) for g in m.groups())
+    try:
+        end = datetime(year, month, dom, hour, minute)
+    except ValueError:
+        return False
+    return end <= datetime(day.year, day.month, day.day)
 
 
 def coupon_is_valid(detail: dict, page: ItemPage) -> bool:

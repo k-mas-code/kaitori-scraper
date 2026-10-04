@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from datetime import date, datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -18,14 +19,15 @@ from dataclasses import asdict
 
 from .buyback import Buyback, load_buyback_prices
 from . import db
-from .config import ROOT, ConfigError, load_campaigns
+from .config import (ROOT, CampaignConfig, ConfigError, Settings, active_config, load_settings_file,
+                     parse_settings, TARGET_PAGE)
 from .finalize import NOT_PROFITABLE, build_result, skip_reason
 from .prefilter import max_price_rate, price_can_never_pass, select_candidates
 from .state import RunState
-from .stores import StoreListError, load_stores
+from .stores import StoreList, StoreListError, load_stores
 from .coupon_report import write_coupon_report
-from .yahoo_page import (Blocked, PageClient, PageFormatError, coupon_is_valid, parse_all_coupons,
-                         parse_usable_coupons)
+from .yahoo_page import (Blocked, PageClient, PageFormatError, coupon_expired, coupon_is_valid,
+                         parse_all_coupons, parse_usable_coupons)
 from .yahoo_api import (MAX_START_PLUS_RESULTS, RESULTS_PER_PAGE, ItemSearchClient, JanSearchError,
                         YahooApiError)
 
@@ -43,14 +45,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-buyback", type=int, default=None, help="買取価格がこの金額 (円) 以下の JAN だけを対象にする")
     p.add_argument("--limit", type=int, default=None,
                    help="対象 JAN を N 件に絞る (試行用)。買取価格の高い順に並べ、全体から均等な間隔で N 件を選ぶ")
-    p.add_argument("--date", type=date.fromisoformat, default=date.today(),
-                   help="実行日 YYYY-MM-DD (ボーナスストアPlus枠の日付)。既定は今日")
+    p.add_argument("--date", type=date.fromisoformat, default=None,
+                   help="実行日 YYYY-MM-DD (この日のボーナスストアPlus枠・キャンペーン・クーポンで計算する)。"
+                        "既定は設定の購入予定日 (purchase_date)")
+    p.add_argument("--config-file", type=Path, default=None,
+                   help="設定を Supabase (結果ページの設定画面で保存したもの) ではなく、この YAML / JSON ファイルから読む")
     p.add_argument("--run-name", default=None, help="状態を保存するフォルダ名。既定は実行日 (YYYYMMDD)")
     p.add_argument("--stage", choices=("api", "all"), default="all",
                    help="api = 商品検索APIでの絞り込みまで / all = 商品ページの確定判定と保存まで (既定)")
     p.add_argument("--no-db", action="store_true", help="Supabase に保存しない (結果はローカルの pages.jsonl のみ)")
     p.add_argument("--check-config", action="store_true",
-                   help="config/campaigns.yaml と店舗リストを読み、解釈した内容を表示して終了する (通信なし)")
+                   help="設定と店舗リストを読み、解釈した内容を表示して終了する "
+                        "(通信は Supabase からの設定の読み込みだけ。--config-file なら通信なし)")
     args = p.parse_args(argv)
     if not 0 <= args.coupon_margin < 1:
         p.error("--coupon-margin は 0 以上 1 未満")
@@ -75,7 +81,8 @@ def search_variants(jan_code: str) -> list[str]:
     return ["0" + jan_code] if len(jan_code) == 12 else [jan_code]
 
 
-def search_one_jan(client: ItemSearchClient, buyback: Buyback, cfg, stores, coupon_margin: float,
+def search_one_jan(client: ItemSearchClient, buyback: Buyback, cfg: CampaignConfig, stores: StoreList,
+                   coupon_margin: float,
                    price_rate: float) -> dict:
     """JAN 1 件を価格の安い順に検索し、候補を集める。これ以上は通らない価格に達したら打ち切る"""
     hits_seen, total, candidates = 0, 0, []
@@ -90,7 +97,7 @@ def search_one_jan(client: ItemSearchClient, buyback: Buyback, cfg, stores, coup
                 break
             last_price = hits[-1].get("price")
             if isinstance(last_price, int) and price_can_never_pass(
-                    last_price, buyback.price, price_rate, coupon_margin):
+                    last_price, buyback.price, price_rate, coupon_margin, cfg.coupons):
                 break
             start += RESULTS_PER_PAGE
         hits_seen += start - 1 + len(hits)
@@ -103,7 +110,7 @@ def search_one_jan(client: ItemSearchClient, buyback: Buyback, cfg, stores, coup
             "candidates": list(unique.values())}
 
 
-def check_candidate(pages: PageClient, candidate: dict, cfg, stores) -> dict:
+def check_candidate(pages: PageClient, candidate: dict, cfg: CampaignConfig, stores: StoreList) -> dict:
     """候補 1 件を商品ページで確定判定する。戻り値は pages.jsonl の 1 行"""
     key = {"store_id": candidate["store_id"], "item_code": candidate["item_code"],
            "jan_code": candidate["jan_code"]}
@@ -117,54 +124,102 @@ def check_candidate(pages: PageClient, candidate: dict, cfg, stores) -> dict:
     seen = {"coupons_seen": parse_all_coupons(coupon_data), "store_name": page.store_name,
             "item_name": page.name, "item_url": candidate["item_url"], "sale_price": page.price}
     coupon, detail = None, None
-    for c in parse_usable_coupons(coupon_data)[:2]:   # 値引きの大きい順に、有効なものが見つかるまで (最大 2 件)
+    # 購入予定日より前に切れる公開クーポンは使えないので外す
+    usable = [c for c in parse_usable_coupons(coupon_data) if not coupon_expired(c.end_text, stores.run_date)]
+    for c in usable[:2]:   # 値引きの大きい順に、有効なものが見つかるまで (最大 2 件)
         d = pages.fetch_coupon_detail(c, page.item_code)
         if d and coupon_is_valid(d, page):
             coupon, detail = c, d
             break
-    row = build_result(candidate, page, store, cfg, stores, coupon, detail)
+    row = build_result(candidate, page, store, cfg, coupon, detail)
     if row is None:
         return {**key, **seen, "status": NOT_PROFITABLE, "coupon_discount": coupon.discount if coupon else 0}
     return {**key, **seen, "status": "result",
             "row": {**row, "checked_at": datetime.now().astimezone().isoformat()}}
 
 
-def print_config(cfg, stores) -> None:
+TARGET_LABELS = {"all": "すべての店", "bsplus": "その日ボーナスストアPlus枠がある店",
+                 "bsplus_good": "その日ボーナスストアPlus枠があり、かつ優良ストア", "good_store": "優良ストア"}
+
+
+def describe_stores(store_ids: tuple[str, ...], stores: StoreList) -> str:
+    text = "指定の店: " + ", ".join(store_ids)
+    unknown = [s for s in store_ids if s not in stores.stores]
+    return text + (f"  ※店舗リストに無い店ID: {', '.join(unknown)}" if unknown else "")
+
+
+def describe_coupon(c) -> str:
+    if c.type == "fixed":
+        value = f"{c.value:,}円OFF"
+    else:
+        limit = "" if c.max_discount is None else f" (値引き上限 {c.max_discount:,}円)"
+        value = f"{float(c.value) * 100:g}%OFF{limit}"
+    minimum = purchase_range_text(c)
+    period = f"、期間 {c.valid_from or '指定なし'} 〜 {c.valid_until or '指定なし'}"
+    return f"{value}{minimum}{period}"
+
+
+def purchase_range_text(c) -> str:
+    """最低・最高購入額の表示 (例: 「、5,000〜19,999円」)"""
+    if getattr(c, "max_purchase", None) is not None:   # 手持ちクーポンには最高購入額が無い
+        return f"、{c.min_purchase:,}〜{c.max_purchase:,}円"
+    return f"、{c.min_purchase:,}円以上" if c.min_purchase else ""
+
+
+def print_config(settings: Settings, cfg: CampaignConfig, stores: StoreList, source: str) -> None:
     """設定をどう解釈したかを、人が読める形で表示する"""
     def describe(c) -> str:
         cap = "上限なし" if c.cap is None else f"上限 {c.cap:,}pt"
         base = "税込" if c.base == "tax_included" else "税抜"
-        minimum = f"、{c.min_purchase:,}円以上" if c.min_purchase else ""
+        minimum = purchase_range_text(c)
         return f"{float(c.rate) * 100:g}% ({base}価格に対して、{cap}{minimum})"
 
-    targets = {"all": "すべての店", "bsplus": "その日ボーナスストアPlus枠がある店", "good_store": "優良ストア"}
-    print(f"実行日 {stores.run_date} / 店舗リスト {stores.source_file}")
-    print("\n[common] 毎回付く分")
+    print(f"設定の読み込み元: {source}")
+    override = "" if stores.run_date == settings.purchase_date else " ← --date で上書き"
+    print(f"購入予定日 (設定): {settings.purchase_date} / 実行日: {stores.run_date}{override}")
+    print(f"店舗リスト: {stores.source_file}")
+    print("\n[common] 毎日付く分" + ("" if cfg.common else " (なし)"))
     for c in cfg.common:
         print(f"  - {c.name}: {describe(c)}")
-    print("\n[campaigns] その日のキャンペーン" + ("" if cfg.campaigns else " (なし)"))
+    print(f"\n[campaigns] {stores.run_date} に有効なキャンペーン" + ("" if cfg.campaigns else " (なし)"))
     for c in cfg.campaigns:
         if c.target == "page":
             target = f"商品ページの内訳に「{c.page_title}」を含む行が出ている店"
-        elif isinstance(c.target, tuple):
-            target = "指定の店: " + ", ".join(c.target)
-            unknown = [t for t in c.target if t not in stores.stores]
-            if unknown:
-                target += f"  ※店舗リストに無い店ID: {', '.join(unknown)}"
+        elif c.target == "stores":
+            target = describe_stores(c.store_ids, stores)
         else:
-            target = targets[c.target]
+            target = TARGET_LABELS[c.target]
         entry = "、要エントリー" if c.entry_required else ""
         print(f"  - {c.component.name}: {describe(c.component)}{entry}\n      対象: {target}")
+    print(f"  日付外で無効: {len(settings.campaigns) - len(cfg.campaigns)} 件")
+    print(f"\n[coupons] {stores.run_date} に使える手持ちクーポン (1 注文 1 枚、併用なし)"
+          + ("" if cfg.coupons else " (なし)"))
+    for c in cfg.coupons:
+        target = describe_stores(c.store_ids, stores) if c.target == "stores" else TARGET_LABELS["all"]
+        print(f"  - {c.name}: {describe_coupon(c)}\n      対象: {target}")
+    print(f"  期間外で無効: {len(settings.coupons) - len(cfg.coupons)} 件")
     slots = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
     cap = "上限なし" if cfg.bsplus.cap is None else f"上限 {cfg.bsplus.cap:,}pt"
     print(f"\n[bsplus] ボーナスストアPlus: {cap}。この日の枠あり {slots} 店 / 全 {len(stores.stores)} 店")
     if stores.global_bonus_labels:
-        good = "+2% に重ねて +3% (計 +5%)" if cfg.bsplus.good_store_bonus_stacks else "+3% のみ"
-        print(f"  全体加算日 ({stores.global_bonus_labels}): 枠のある店 +2%、優良ストアは {good}")
-    else:
-        print("  全体加算日ではない")
+        print(f"  店舗リストではこの日は全体加算日 ({stores.global_bonus_labels})。加算分は自動では付けないので、"
+              "campaigns に target=bsplus / bsplus_good の行があるか確認する")
     print("\n[自動で読む分] ストアポイント 1% + 上乗せ (商品ページ)、ボーナスストアPlus の率 (店舗リスト)")
     print("\n設定に問題は見つかりませんでした。")
+
+
+def load_settings(config_file: Path | None) -> tuple[Settings, str]:
+    """設定と、その読み込み元の説明。既定は Supabase、--config-file があればそのファイル"""
+    if config_file is not None:
+        return load_settings_file(config_file), f"ファイル {config_file}"
+    try:
+        client = db.get_client()
+    except db.DbConfigError as e:
+        raise ConfigError(f"{e}。設定を Supabase から読めない (ファイルから読むなら --config-file)") from e
+    try:
+        return parse_settings(db.fetch_settings(client)), "Supabase (arbitrage_settings)"
+    except ConfigError as e:
+        raise ConfigError(f"Supabase の設定: {e}") from e
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -173,17 +228,21 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv(ROOT / ".env")
 
     try:
-        cfg = load_campaigns()
-        stores = load_stores(args.date)
+        settings, source = load_settings(args.config_file)
+        # 実行日: --date があればそれ、無ければ設定の購入予定日
+        run_date = args.date or settings.purchase_date
+        cfg = active_config(settings, run_date)
+        stores = load_stores(run_date)
     except (ConfigError, StoreListError) as e:
         logger.error("%s", e)
         return 2
+    logger.info("設定: %s / 実行日 %s (%s) / キャンペーン %d 件, 手持ちクーポン %d 件が有効", source, run_date,
+                "--date" if args.date else "設定の購入予定日", len(cfg.campaigns), len(cfg.coupons))
     bsplus_stores = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
-    logger.info("stores: %d (うち %s のボーナスストアPlus枠あり %d, 全体加算 %s)",
-                len(stores.stores), args.date, bsplus_stores, stores.global_bonus_labels or "なし")
+    logger.info("stores: %d (うち %s のボーナスストアPlus枠あり %d)", len(stores.stores), run_date, bsplus_stores)
 
     if args.check_config:
-        print_config(cfg, stores)
+        print_config(settings, cfg, stores, source)
         return 0
 
     try:
@@ -192,10 +251,15 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("%s", e)
         return 2
 
-    run_name = args.run_name or f"{args.date:%Y%m%d}"
+    # 既定の run 名は「実行した日 + 購入予定日」。同じ購入予定日でも、別の日に実行すれば新しい run になる
+    # (古い販売価格・買取価格の結果を黙って再利用しない)
+    run_name = args.run_name or f"{date.today():%Y%m%d}-buy{run_date:%m%d}"
+    if run_date != date.today() and any(c.target == TARGET_PAGE for c in cfg.campaigns):
+        logger.warning("購入予定日 (%s) が今日ではないので、対象が「商品ページに行が出ている店」のキャンペーンは"
+                       "今日のページで判定される (その日だけの企画は付かない扱いになる)", run_date)
     state = RunState(run_name)
     # 再開時に一致を求める条件 (--limit は対象 JAN を絞るだけなので含めない)
-    meta = {"run_date": args.date.isoformat(), "coupon_margin": args.coupon_margin,
+    meta = {"run_date": run_date.isoformat(), "coupon_margin": args.coupon_margin,
             "config": cfg.raw, "store_list": stores.source_file}
     previous = state.load_meta()
     if previous is None:
@@ -206,8 +270,10 @@ def main(argv: list[str] | None = None) -> int:
                      "新しい条件でやり直すなら --run-name で別名を付ける", run_name, ", ".join(changed))
         return 2
 
-    resume_cmd = (f"python -m arbitrage.run --date {args.date} --run-name {run_name} "
+    # 設定の購入予定日をあとで変えても同じ日付で再開できるよう、--date を明示する
+    resume_cmd = (f"python -m arbitrage.run --date {run_date} --run-name {run_name} "
                   f"--coupon-margin {args.coupon_margin}"
+                  + (f" --config-file {args.config_file}" if args.config_file else "")
                   + "".join(f" {flag} {value}" for flag, value in (
                       ("--min-buyback", args.min_buyback), ("--max-buyback", args.max_buyback),
                       ("--limit", args.limit)) if value is not None)
@@ -216,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
     # 買取価格は開始時点のものを保存し、再開しても同じ価格で判定を続ける
     saved = state.load_buyback()
     if saved is None:
-        buyback = load_buyback_prices(args.date)
+        # 買取価格は「いま」の相場を使う (購入予定日が先の日付でも、今日までの直近分を読む)
+        buyback = load_buyback_prices(min(run_date, date.today()))
         state.save_buyback([asdict(b) for b in buyback.values()])
     else:
         buyback = {row["jan_code"]: Buyback(**row) for row in saved}
@@ -343,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         client_db = db.get_client()
     except db.DbConfigError as e:
-        logger.error("%s", e)
+        logger.error("%s。保存せずに試すなら --no-db", e)
         return 2
     meta_now = state.load_meta()
     run_id = meta_now.get("run_id")
