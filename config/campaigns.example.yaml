@@ -37,5 +37,7 @@ campaigns:   # その日のキャンペーン (複数併用可)
 bsplus:   # ボーナスストアPlus の上限と全体加算
   cap_per_order: null
   cap_per_period: null
-  # 全体加算日 (店舗リスト 1 行目が「+2」「+2/+3」の日) に足す率。加算しないなら null。
-  global_bonus: null
+  # 全体加算日 (店舗リスト 1 行目が「+2」「+2/+3」の日) は自動で足す:
+  #   ボーナスストアPlus枠がある店 +2% / 「+2/+3」の日の優良ストアは +3%
+  # 優良ストアの +3% が +2% に重ねて付く (計 +5%) なら true にする。
+  good_store_bonus_stacks: false

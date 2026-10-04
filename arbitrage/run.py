@@ -14,16 +14,20 @@ from datetime import date, datetime
 
 from dotenv import load_dotenv
 
-from .buyback import load_buyback_prices
+from dataclasses import asdict
+
+from .buyback import Buyback, load_buyback_prices
 from .config import ROOT, ConfigError, load_campaigns
-from .prefilter import max_total_rate, price_can_never_pass, select_candidates
+from .prefilter import max_price_rate, price_can_never_pass, select_candidates
 from .state import RunState
 from .stores import StoreListError, load_stores
-from .yahoo_api import MAX_START_PLUS_RESULTS, RESULTS_PER_PAGE, ItemSearchClient, YahooApiError
+from .yahoo_api import (MAX_START_PLUS_RESULTS, RESULTS_PER_PAGE, ItemSearchClient, JanSearchError,
+                        YahooApiError)
 
 logger = logging.getLogger("arbitrage")
 
 PROGRESS_EVERY = 25
+MAX_CONSECUTIVE_FAILURES = 5   # JAN 単位の失敗がこの回数続いたら全体を止める
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -41,26 +45,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def search_one_jan(client: ItemSearchClient, buyback, cfg, stores, coupon_margin: float,
-                   total_rate) -> dict:
+def search_variants(jan_code: str) -> list[str]:
+    """API に渡す JAN。12 桁 (UPC) は Yahoo! 側が先頭 0 付きの 13 桁で登録していることがあるので両方試す"""
+    return [jan_code, "0" + jan_code] if len(jan_code) == 12 else [jan_code]
+
+
+def search_one_jan(client: ItemSearchClient, buyback: Buyback, cfg, stores, coupon_margin: float,
+                   price_rate: float) -> dict:
     """JAN 1 件を価格の安い順に検索し、候補を集める。これ以上は通らない価格に達したら打ち切る"""
     hits_seen, total, candidates = 0, 0, []
-    start = 1
-    while start + RESULTS_PER_PAGE <= MAX_START_PLUS_RESULTS:
-        data = client.search_jan(buyback.jan_code, start=start)
-        hits = data["hits"]
-        total = data.get("totalResultsAvailable") or 0
-        hits_seen += len(hits)
-        candidates += select_candidates(hits, buyback, cfg, stores, coupon_margin)
-        if not hits or hits_seen >= total:
-            break
-        last_price = hits[-1].get("price")
-        if isinstance(last_price, int) and price_can_never_pass(
-                last_price, buyback.price, total_rate, coupon_margin):
-            break
-        start += RESULTS_PER_PAGE
+    for jan in search_variants(buyback.jan_code):
+        start = 1
+        while start + RESULTS_PER_PAGE <= MAX_START_PLUS_RESULTS + 1:
+            data = client.search_jan(jan, start=start)
+            hits = data["hits"]
+            available = data.get("totalResultsAvailable") or 0
+            candidates += select_candidates(hits, buyback, cfg, stores, coupon_margin)
+            if not hits or start - 1 + len(hits) >= available:
+                break
+            last_price = hits[-1].get("price")
+            if isinstance(last_price, int) and price_can_never_pass(
+                    last_price, buyback.price, price_rate, coupon_margin):
+                break
+            start += RESULTS_PER_PAGE
+        hits_seen += start - 1 + len(hits)
+        total += available
+        if total:
+            break   # 元の桁数で見つかったら 0 付きは試さない
+    # 12 桁と 13 桁の両方で同じ商品が返った場合の重複を除く
+    unique = {(c["store_id"], c["item_code"]): c for c in candidates}
     return {"jan_code": buyback.jan_code, "hits_total": total, "hits_seen": hits_seen,
-            "candidates": candidates}
+            "candidates": list(unique.values())}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -98,7 +113,17 @@ def main(argv: list[str] | None = None) -> int:
                      "新しい条件でやり直すなら --run-name で別名を付ける", run_name, ", ".join(changed))
         return 2
 
-    buyback = load_buyback_prices(args.date)
+    resume_cmd = (f"python -m arbitrage.run --date {args.date} --run-name {run_name} "
+                  f"--coupon-margin {args.coupon_margin}" + (f" --limit {args.limit}" if args.limit else ""))
+
+    # 買取価格は開始時点のものを保存し、再開しても同じ価格で判定を続ける
+    saved = state.load_buyback()
+    if saved is None:
+        buyback = load_buyback_prices(args.date)
+        state.save_buyback([asdict(b) for b in buyback.values()])
+    else:
+        buyback = {row["jan_code"]: Buyback(**row) for row in saved}
+        logger.info("buyback prices: %d JANs (run %s の開始時点の保存分)", len(buyback), run_name)
     targets = sorted(buyback.values(), key=lambda b: (-b.price, b.jan_code))
     if args.limit:
         targets = targets[:args.limit]
@@ -110,12 +135,24 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("target JANs: %d (済み %d, 残り %d) run=%s", len(targets), len(targets) - len(pending),
                 len(pending), run_name)
 
+    failed: list[str] = []
     if pending:
-        total_rate = max_total_rate(cfg, stores)
+        price_rate = max_price_rate(cfg, stores)
         finished = len(targets) - len(pending)
+        consecutive_failures = 0
         try:
             for b in pending:
-                record = search_one_jan(client, b, cfg, stores, args.coupon_margin, total_rate)
+                try:
+                    record = search_one_jan(client, b, cfg, stores, args.coupon_margin, price_rate)
+                except JanSearchError as e:
+                    # その JAN は済みにせず (次回の再開でやり直す)、次へ進む
+                    failed.append(b.jan_code)
+                    consecutive_failures += 1
+                    logger.warning("JAN %s 失敗: %s", b.jan_code, e)
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                        raise YahooApiError(f"JAN 単位の失敗が {consecutive_failures} 件続いた") from e
+                    continue
+                consecutive_failures = 0
                 state.append_api_record(record)
                 finished += 1
                 candidate_count += len(record["candidates"])
@@ -123,12 +160,18 @@ def main(argv: list[str] | None = None) -> int:
                     logger.info("API %d/%d JAN 完了, 候補 %d 件 (API %d 回)",
                                 finished, len(targets), candidate_count, client.request_count)
         except YahooApiError as e:
-            logger.error("中断: %s (同じコマンドで再開できる)", e)
+            logger.error("中断: %s", e)
+            logger.error("再開: %s", resume_cmd)
             return 1
         except KeyboardInterrupt:
-            logger.warning("中断 (%d/%d JAN 完了)。同じコマンドで再開できる", finished, len(targets))
+            logger.warning("中断 (%d/%d JAN 完了)", finished, len(targets))
+            logger.warning("再開: %s", resume_cmd)
             return 130
 
+    if failed:
+        logger.warning("失敗した JAN %d 件 (未処理のまま): %s", len(failed), ", ".join(failed[:20]))
+        logger.warning("やり直す: %s", resume_cmd)
+        return 1
     logger.info("絞り込み完了: JAN %d 件, 候補 %d 件 → %s", len(targets), candidate_count, state.api_path)
     return 0
 
