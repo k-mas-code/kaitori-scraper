@@ -138,3 +138,33 @@ def test_coupon_is_not_used_when_it_breaks_min_purchase():
     row = build_result(candidate(p, 3500), p, s, cfg, stores_of(s), coupons("anker")[0], None)
     assert row["coupon_discount"] == 0 and row["coupon"] is None
     assert row["points_total"] == 1124 and row["effective_price"] == 2866      # 税抜 3,628 × (30% + 1%)
+
+
+def test_all_coupons_include_unachieved_and_login_only():
+    from arbitrage.yahoo_page import parse_all_coupons
+    dyson = parse_all_coupons(FIXTURES["dyson"]["coupons"])
+    assert [(c["text"], c["achieved"], c["login_required"], c["item_discount"]) for c in dyson] == [
+        ("ストア内全品50%OFFクーポン", True, True, 0),
+        ("対象商品8,900円OFFクーポン", False, False, 8900),
+        ("対象商品10％OFFクーポン", False, False, 5379),
+    ]
+    assert dyson[1]["condition_text"] == "対象商品2個以上の購入"
+
+
+def test_coupon_report_groups_by_store_and_coupon():
+    from arbitrage.coupon_report import ALL_STORES, build_coupon_rows
+    from arbitrage.yahoo_page import parse_all_coupons
+    records = [
+        {"store_id": tag_store, "store_name": tag_store, "item_name": f"item-{i}", "item_url": f"https://x/{i}",
+         "sale_price": 1000 * (i + 1), "coupons_seen": parse_all_coupons(FIXTURES[tag]["coupons"])}
+        for i, (tag, tag_store) in enumerate([("dyson", "dyson"), ("dyson", "dyson"), ("joshin", "joshin"),
+                                              ("digimart", "digimart-shop")])
+    ] + [{"store_id": "old", "status": "not_profitable"}]            # coupons_seen が無い古い記録
+    rows = build_coupon_rows(records)
+    assert [(r["店舗ID"], r["クーポン"]) for r in rows] == [
+        ("dyson", "対象商品8,900円OFFクーポン"), ("dyson", "対象商品10％OFFクーポン"),
+        ("joshin", "対象商品2,000円OFFクーポン"), (ALL_STORES, "ストア内全品50%OFFクーポン"),
+    ]
+    assert rows[0]["条件未達の商品数"] == 2 and rows[0]["1個で使えた商品数"] == 0 and rows[0]["最大値引き額"] == 8900
+    assert rows[2]["1個で使えた商品数"] == 1 and rows[2]["ログイン"] == "不要"
+    assert rows[3]["ログイン"] == "必要" and rows[3]["1個で使えた商品数"] == 4

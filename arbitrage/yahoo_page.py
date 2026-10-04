@@ -187,6 +187,31 @@ def parse_usable_coupons(data: dict) -> list[Coupon]:
     return sorted(coupons, key=lambda c: -c.discount)
 
 
+def parse_all_coupons(data: dict) -> list[dict]:
+    """クーポン一覧の応答に載っているクーポンをすべて返す (この商品 1 個では使えないものも含む。報告用)"""
+    normal = data.get("normal")
+    if not isinstance(normal, dict):
+        raise PageFormatError("クーポン応答に normal が無い")
+    coupons = []
+    for key, achieved in (("conditionAchievedCoupons", True), ("conditionNotAchievedCoupons", False)):
+        for c in (normal.get(key) or {}).get("items") or []:
+            if not c.get("id"):
+                continue
+            coupons.append({
+                "id": c["id"],
+                "text": c.get("content") or "",
+                "name": c.get("couponName"),
+                "condition_text": c.get("useConditionText"),
+                "limit_text": c.get("discountPriceLimitText"),
+                "end_text": c.get("useEndDateText"),
+                "item_discount": c.get("itemDiscountPrice") if isinstance(c.get("itemDiscountPrice"), int) else 0,
+                "achieved": achieved,                               # この商品 1 個の購入で条件を満たすか
+                "login_required": c.get("buttonType") != "Normal",  # 初回アプリ限定など、ログインが要るもの
+                "url": c.get("detailUrl") or "",
+            })
+    return coupons
+
+
 def parse_coupon_detail(props: dict, item_code: str) -> dict:
     coupon = (props.get("data") or {}).get("coupon")
     if not isinstance(coupon, dict):
@@ -276,18 +301,22 @@ class PageClient:
             return None   # 販売終了などで商品情報が無いページ
         return parse_item_page(props)
 
-    def fetch_coupons(self, page: ItemPage) -> list[Coupon]:
+    def fetch_coupon_data(self, page: ItemPage) -> dict:
+        """クーポン一覧の応答 (JSON)。parse_usable_coupons / parse_all_coupons に渡す"""
         resp = self._request(
             "POST", COUPON_URL.format(store_id=page.store_id, item_code=page.item_code),
             data=json.dumps(coupon_request_body(page.props)),
             headers={"Content-Type": "application/json", "Referer": page.url,
                      "Origin": "https://store.shopping.yahoo.co.jp"})
         if resp is None:
-            return []
+            return {"normal": {}}
         try:
-            return parse_usable_coupons(resp.json())
+            data = resp.json()
         except ValueError as e:
             raise PageFormatError("クーポン応答が JSON でない") from e
+        if not isinstance(data, dict):
+            raise PageFormatError("クーポン応答が想定外の形")
+        return data
 
     def fetch_coupon_detail(self, coupon: Coupon, item_code: str) -> dict | None:
         resp = self._request("GET", coupon.detail_url, headers={"Accept": "text/html"})
