@@ -37,8 +37,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m arbitrage.run", description=__doc__)
     p.add_argument("--coupon-margin", type=float, default=0.2,
                    help="絞り込みで見込むクーポン値引きの余地 (0.2 = 20%%)")
+    p.add_argument("--min-buyback", type=int, default=None, help="買取価格がこの金額 (円) 以上の JAN だけを対象にする")
+    p.add_argument("--max-buyback", type=int, default=None, help="買取価格がこの金額 (円) 以下の JAN だけを対象にする")
     p.add_argument("--limit", type=int, default=None,
-                   help="対象 JAN を買取価格の高い順に先頭 N 件に絞る (試行用)")
+                   help="対象 JAN を N 件に絞る (試行用)。買取価格の高い順に並べ、全体から均等な間隔で N 件を選ぶ")
     p.add_argument("--date", type=date.fromisoformat, default=date.today(),
                    help="実行日 YYYY-MM-DD (ボーナスストアPlus枠の日付)。既定は今日")
     p.add_argument("--run-name", default=None, help="状態を保存するフォルダ名。既定は実行日 (YYYYMMDD)")
@@ -50,7 +52,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = p.parse_args(argv)
     if not 0 <= args.coupon_margin < 1:
         p.error("--coupon-margin は 0 以上 1 未満")
+    if args.limit is not None and args.limit <= 0:
+        p.error("--limit は 1 以上")
     return args
+
+
+def select_targets(buyback, min_price: int | None, max_price: int | None, limit: int | None) -> list[Buyback]:
+    """対象 JAN を買取価格の高い順に並べる。limit があれば、価格帯が偏らないよう均等な間隔で選ぶ"""
+    targets = sorted(
+        (b for b in buyback
+         if (min_price is None or b.price >= min_price) and (max_price is None or b.price <= max_price)),
+        key=lambda b: (-b.price, b.jan_code))
+    if limit and len(targets) > limit:
+        targets = [targets[i * len(targets) // limit] for i in range(limit)]
+    return targets
 
 
 def search_variants(jan_code: str) -> list[str]:
@@ -186,7 +201,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     resume_cmd = (f"python -m arbitrage.run --date {args.date} --run-name {run_name} "
-                  f"--coupon-margin {args.coupon_margin}" + (f" --limit {args.limit}" if args.limit else ""))
+                  f"--coupon-margin {args.coupon_margin}"
+                  + "".join(f" {flag} {value}" for flag, value in (
+                      ("--min-buyback", args.min_buyback), ("--max-buyback", args.max_buyback),
+                      ("--limit", args.limit)) if value is not None)
+                  + (" --no-db" if args.no_db else ""))
 
     # 買取価格は開始時点のものを保存し、再開しても同じ価格で判定を続ける
     saved = state.load_buyback()
@@ -196,9 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         buyback = {row["jan_code"]: Buyback(**row) for row in saved}
         logger.info("buyback prices: %d JANs (run %s の開始時点の保存分)", len(buyback), run_name)
-    targets = sorted(buyback.values(), key=lambda b: (-b.price, b.jan_code))
-    if args.limit:
-        targets = targets[:args.limit]
+    targets = select_targets(buyback.values(), args.min_buyback, args.max_buyback, args.limit)
 
     done = {r["jan_code"]: r for r in state.load_api_records()}
     target_jans = {b.jan_code for b in targets}
