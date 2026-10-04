@@ -26,7 +26,15 @@ class YahooApiError(RuntimeError):
 
 
 class JanSearchError(RuntimeError):
-    """その JAN だけの失敗 (不正な JAN で 400 など)。記録して次の JAN に進める"""
+    """その JAN だけの失敗。記録して次の JAN に進める
+
+    permanent=True は何度やっても同じ結果になるもの (不正な JAN で 400 など)。
+    False は一時的な失敗 (通信失敗の連続など) で、再開時にやり直す。
+    """
+
+    def __init__(self, message: str, permanent: bool = False):
+        super().__init__(message)
+        self.permanent = permanent
 
 
 class ItemSearchClient:
@@ -81,7 +89,8 @@ class ItemSearchClient:
                 time.sleep(NETWORK_BACKOFF * attempt)
                 continue
             if resp.status_code != 200:
-                raise JanSearchError(f"itemSearch {resp.status_code}: {self._mask(resp.text[:200])}")
+                raise JanSearchError(f"itemSearch {resp.status_code}: {self._mask(resp.text[:200])}",
+                                     permanent=True)
             try:
                 data = resp.json()
             except ValueError:
