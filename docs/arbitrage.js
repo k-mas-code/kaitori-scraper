@@ -1,4 +1,5 @@
 // 利益商品リスト - ログインしたオーナーだけが結果を読める (RLS)
+import { createSettings } from './arbitrage-settings.js';
 
 const SOURCE_LABELS = { kaitorishouten: '買取商店', rudeya: '買取ルデヤ', kaitoriwiki: '買取wiki' };
 const PAGE_SIZE = 1000;   // PostgREST の 1 リクエストあたりの上限
@@ -27,6 +28,12 @@ const $category = $('category-select');
 const $store = $('store-select');
 const $status = $('status');
 const $tbody = $('result-tbody');
+const $tabs = $('tabs');
+const $tabButtons = { results: $('tab-results'), settings: $('tab-settings') };
+const $settings = $('settings');
+
+const settings = createSettings({ supabase, $root: $settings });
+let currentTab = 'results';
 
 let results = [];          // 選択中の実行の全結果 (利益率の高い順)
 let loadToken = 0;         // 実行日を素早く切り替えたとき、古い応答を捨てるための番号
@@ -58,6 +65,7 @@ $loginForm.addEventListener('submit', async (e) => {
 });
 
 $logout.addEventListener('click', async () => {
+  if (!confirmDiscard()) return;
   await supabase.auth.signOut();
 });
 
@@ -69,8 +77,13 @@ supabase.auth.onAuthStateChange((_event, session) => {
 function render(session) {
   const loggedIn = Boolean(session);
   $loginCard.classList.toggle('hidden', loggedIn);
-  $app.classList.toggle('hidden', !loggedIn);
   $logout.classList.toggle('hidden', !loggedIn);
+  $tabs.classList.toggle('hidden', !loggedIn);
+  if (!loggedIn) {
+    settings.discard();
+    currentTab = 'results';
+  }
+  showTab(loggedIn);
   if (loggedIn) {
     loadRuns();
   } else {
@@ -81,6 +94,36 @@ function render(session) {
       showMessage('リンクが無効か、期限が切れています。もう一度リンクを送信してください。', true);
     }
   }
+}
+
+// ---------- タブ (結果 / 設定) ----------
+function showTab(loggedIn = true) {
+  $app.classList.toggle('hidden', !loggedIn || currentTab !== 'results');
+  $settings.classList.toggle('hidden', !loggedIn || currentTab !== 'settings');
+  for (const [name, $btn] of Object.entries($tabButtons)) {
+    const selected = name === currentTab;
+    $btn.setAttribute('aria-selected', String(selected));
+    $btn.className = `tab-btn px-4 py-2 rounded-lg text-sm font-medium ${selected
+      ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 shadow-sm hover:bg-slate-100'}`;
+  }
+  if (loggedIn && currentTab === 'settings') settings.open();
+}
+
+// 未保存の変更があれば確認する。捨ててよければ true
+function confirmDiscard() {
+  if (!settings.isDirty()) return true;
+  if (!confirm('設定に未保存の変更があります。保存せずに移動すると、変更は失われます。移動しますか？')) return false;
+  settings.discard();
+  return true;
+}
+
+for (const [name, $btn] of Object.entries($tabButtons)) {
+  $btn.addEventListener('click', () => {
+    if (name === currentTab) return;
+    if (currentTab === 'settings' && !confirmDiscard()) return;
+    currentTab = name;
+    showTab();
+  });
 }
 
 // ---------- 実行一覧 ----------
@@ -176,8 +219,9 @@ function renderTable() {
 }
 
 function rowHtml(r) {
+  const couponLabel = r.coupon?.source === 'manual' ? '手持ちクーポン' : 'クーポン';
   const coupon = r.coupon_discount > 0
-    ? `<span class="ml-1 text-xs text-rose-600 whitespace-nowrap">クーポン −${yen(r.coupon_discount)}</span>` : '';
+    ? `<span class="ml-1 text-xs text-rose-600 whitespace-nowrap">${couponLabel} −${yen(r.coupon_discount)}</span>` : '';
   const capped = (r.capped_campaigns || []).length
     ? '<span class="ml-1 text-xs text-amber-600 whitespace-nowrap">上限到達あり</span>' : '';
   return `
@@ -229,11 +273,7 @@ function detailHtml(r) {
       <td class="pr-3 py-0.5 text-right whitespace-nowrap">${percent(p.rate)}${p.base === 'tax_included' ? '（税込）' : ''}</td>
       <td class="py-0.5 text-right whitespace-nowrap">${number(p.points)} pt</td>
     </tr>`).join('');
-  const c = r.coupon;
-  const couponHtml = c ? `
-    <div>${safeLink(c.url, c.text || 'クーポン')} <span class="text-rose-600">−${yen(r.coupon_discount)}</span></div>
-    <div class="text-xs text-slate-500">${[c.name, c.condition_text, c.limit_text, c.end_text].filter(Boolean).map(escapeHtml).join(' / ')}</div>`
-    : '<div class="text-slate-400">使えるクーポンなし</div>';
+  const couponHtml = couponDetailHtml(r);
   return `
     <tr class="detail-row bg-slate-50 border-t border-slate-100">
       <td colspan="6" class="px-3 py-3">
@@ -260,6 +300,22 @@ function detailHtml(r) {
         </div>
       </td>
     </tr>`;
+}
+
+function couponDetailHtml(r) {
+  const c = r.coupon;
+  if (!c) return '<div class="text-slate-400">使えるクーポンなし</div>';
+  if (c.source === 'manual') {
+    // 設定画面で登録した手持ちクーポン (商品ページには出ないので、獲得済みかは自分で確認する)
+    const until = c.valid_until ? `有効期限 ${escapeHtml(c.valid_until)} まで` : '有効期限の登録なし';
+    return `
+    <div><span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 whitespace-nowrap">手持ちクーポン</span>
+      ${escapeHtml(c.name || '（名前なし）')} <span class="text-rose-600">−${yen(c.discount ?? r.coupon_discount)}</span></div>
+    <div class="text-xs text-slate-500">${until} / 設定画面で登録したクーポンです。購入前に獲得済みか確認してください</div>`;
+  }
+  return `
+    <div>${safeLink(c.url, c.text || 'クーポン')} <span class="text-rose-600">−${yen(r.coupon_discount)}</span></div>
+    <div class="text-xs text-slate-500">${[c.name, c.condition_text, c.limit_text, c.end_text].filter(Boolean).map(escapeHtml).join(' / ')}</div>`;
 }
 
 // ---------- ユーティリティ ----------
