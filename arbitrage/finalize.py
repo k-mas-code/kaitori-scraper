@@ -65,8 +65,9 @@ def coupon_options(page: ItemPage, cfg: CampaignConfig, coupon: Coupon | None,
 
 
 def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignConfig,
-                 coupon: Coupon | None, coupon_detail: dict | None) -> dict | None:
-    """本来の式で計算し、黒字なら arbitrage_results の 1 行を返す (赤字・トントンは None)。
+                 coupon: Coupon | None, coupon_detail: dict | None, min_profit: int = 1) -> dict | None:
+    """本来の式で計算し、利益が min_profit 円以上なら arbitrage_results の 1 行を返す。
+    既定 (1 円以上) では赤字・トントンは None。
 
     クーポンは 1 注文 1 枚 (併用不可)。クーポンを使うと最低購入額を割ってキャンペーンが外れることも
     あるので、「使わない」と各クーポンをそれぞれ計算して利益がいちばん大きいものを採る。
@@ -79,7 +80,7 @@ def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignCon
         with_coupon = evaluate(page.price, discount, buyback_price, components)
         if with_coupon["profit"] > best["profit"]:
             best, used_discount, used_coupon = with_coupon, discount, coupon_json
-    if best["effective_price"] <= 0 or best["profit"] <= 0:
+    if best["effective_price"] <= 0 or best["profit"] < min_profit:
         return None
     return {
         "jan_code": candidate["jan_code"],

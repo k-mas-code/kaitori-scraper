@@ -208,7 +208,8 @@ for (const $el of [$minRate, $category, $store]) {
 }
 
 function renderTable() {
-  const minRate = (Number($minRate.value) || 0) / 100;
+  // 空欄は絞り込みなし (--min-profit で保存した赤字の商品も表示する)
+  const minRate = $minRate.value.trim() === '' ? -Infinity : (Number($minRate.value) || 0) / 100;
   const rows = results.filter((r) =>
     Number(r.profit_rate) >= minRate &&
     ($category.value === '__all__' || (r.category || '') === $category.value) &&
@@ -226,8 +227,8 @@ function rowHtml(r) {
     ? '<span class="ml-1 text-xs text-amber-600 whitespace-nowrap">上限到達あり</span>' : '';
   return `
     <tr class="result-row border-t border-slate-100 hover:bg-slate-50 cursor-pointer" data-id="${r.id}" tabindex="0" aria-expanded="false">
-      <td class="px-3 py-2 text-right font-semibold text-emerald-700 whitespace-nowrap">${percent(r.profit_rate)}</td>
-      <td class="px-3 py-2 text-right whitespace-nowrap">+${yen(r.profit)}</td>
+      <td class="px-3 py-2 text-right font-semibold ${r.profit > 0 ? 'text-emerald-700' : 'text-rose-600'} whitespace-nowrap">${percent(r.profit_rate)}</td>
+      <td class="px-3 py-2 text-right whitespace-nowrap ${r.profit > 0 ? '' : 'text-rose-600'}">${r.profit < 0 ? '−' : '+'}${yen(Math.abs(r.profit))}</td>
       <td class="px-3 py-2">
         <div class="font-medium text-slate-700">${escapeHtml(r.item_name)}</div>
         <div class="text-xs text-slate-500">${escapeHtml(r.store_name || r.store_id)}${coupon}${capped}</div>

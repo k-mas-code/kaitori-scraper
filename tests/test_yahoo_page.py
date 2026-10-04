@@ -124,6 +124,10 @@ def test_build_result_with_coupon():
     assert row["coupon"]["fund_type"] == "STORE" and row["coupon"]["discount"] == 2000
     assert row["coupon"]["source"] == "page"
     assert build_result(candidate(p, 52301), p, s, cfg, c, detail) is None     # 利益 0 は載せない
+    # min_profit を下げると、その金額までの赤字も行になる (境界を含む)
+    near = build_result(candidate(p, 51301), p, s, cfg, c, detail, min_profit=-1000)
+    assert near["profit"] == -1000 and near["effective_price"] == 52301 and near["profit_rate"] < 0
+    assert build_result(candidate(p, 51300), p, s, cfg, c, detail, min_profit=-1000) is None
 
 
 def test_coupon_is_not_used_when_it_breaks_min_purchase():
