@@ -77,6 +77,8 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 .venv/bin/python -m arbitrage.run --limit 100 --no-db              # 試行: 全体から均等に 100 JAN、DB 保存なし
 .venv/bin/python -m arbitrage.run --min-buyback 5000 --max-buyback 60000   # 買取価格の範囲で対象を絞る
 .venv/bin/python -m arbitrage.run --stage api                      # 商品検索APIでの絞り込みまで
+.venv/bin/python -m arbitrage.run --min-profit -1000               # 1,000 円までの赤字も結果に載せる (既定は黒字のみ。下限 -5000)
+.venv/bin/python -m arbitrage.run --run-name NAME --stage save      # 新しい検索・確認はせず、確認済みの分だけ DB に保存 (途中経過を結果ページに出す)
 .venv/bin/python -m arbitrage.run --check-config                   # 設定の解釈を表示 (読み込み元・購入予定日・その日に有効なキャンペーン/クーポン)
 .venv/bin/python -m arbitrage.run --date 2026-10-18                # 設定の購入予定日ではなく、この日付で計算する
 .venv/bin/python -m arbitrage.run --config-file config/campaigns.yaml   # 設定を Supabase ではなくファイル (YAML/JSON) から読む

@@ -34,6 +34,8 @@ from .yahoo_api import (MAX_START_PLUS_RESULTS, RESULTS_PER_PAGE, ItemSearchClie
 logger = logging.getLogger("arbitrage")
 
 PROGRESS_EVERY = 25
+# 赤字でもこの金額までは計算結果 (row) を pages.jsonl に残す。--min-profit を変えても商品ページを取り直さずに済む
+KEEP_ROW_MIN_PROFIT = -5000
 MAX_CONSECUTIVE_FAILURES = 5   # JAN 単位の失敗がこの回数続いたら全体を止める
 
 
@@ -51,8 +53,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--config-file", type=Path, default=None,
                    help="設定を Supabase (結果ページの設定画面で保存したもの) ではなく、この YAML / JSON ファイルから読む")
     p.add_argument("--run-name", default=None, help="状態を保存するフォルダ名。既定は実行日 (YYYYMMDD)")
-    p.add_argument("--stage", choices=("api", "all"), default="all",
-                   help="api = 商品検索APIでの絞り込みまで / all = 商品ページの確定判定と保存まで (既定)")
+    p.add_argument("--stage", choices=("api", "all", "save"), default="all",
+                   help="api = 商品検索APIでの絞り込みまで / all = 商品ページの確定判定と保存まで (既定) / "
+                        "save = 新しい検索・確認はせず、確認済みの分だけを保存する (途中経過を結果ページに出す)")
+    p.add_argument("--min-profit", type=int, default=1,
+                   help=f"利益がこの金額 (円) 以上の商品を結果にする。既定は 1 (黒字のみ)。"
+                        f"-1000 なら 1,000 円までの赤字も載せる (下限 {KEEP_ROW_MIN_PROFIT})")
     p.add_argument("--no-db", action="store_true", help="Supabase に保存しない (結果はローカルの pages.jsonl のみ)")
     p.add_argument("--check-config", action="store_true",
                    help="設定と店舗リストを読み、解釈した内容を表示して終了する "
@@ -62,6 +68,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("--coupon-margin は 0 以上 1 未満")
     if args.limit is not None and args.limit <= 0:
         p.error("--limit は 1 以上")
+    if args.min_profit < KEEP_ROW_MIN_PROFIT:
+        p.error(f"--min-profit は {KEEP_ROW_MIN_PROFIT} 以上")
     return args
 
 
@@ -131,11 +139,13 @@ def check_candidate(pages: PageClient, candidate: dict, cfg: CampaignConfig, sto
         if d and coupon_is_valid(d, page):
             coupon, detail = c, d
             break
-    row = build_result(candidate, page, store, cfg, coupon, detail)
+    row = build_result(candidate, page, store, cfg, coupon, detail, min_profit=KEEP_ROW_MIN_PROFIT)
     if row is None:
         return {**key, **seen, "status": NOT_PROFITABLE, "coupon_discount": coupon.discount if coupon else 0}
-    return {**key, **seen, "status": "result",
-            "row": {**row, "checked_at": datetime.now().astimezone().isoformat()}}
+    row = {**row, "checked_at": datetime.now().astimezone().isoformat()}
+    if row["profit"] <= 0:   # 惜しい赤字: 状態は赤字のまま、計算結果だけ残す (--min-profit で結果に含められる)
+        return {**key, **seen, "status": NOT_PROFITABLE, "coupon_discount": row["coupon_discount"], "row": row}
+    return {**key, **seen, "status": "result", "row": row}
 
 
 TARGET_LABELS = {"all": "すべての店", "bsplus": "その日ボーナスストアPlus枠がある店",
@@ -277,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
                   + "".join(f" {flag} {value}" for flag, value in (
                       ("--min-buyback", args.min_buyback), ("--max-buyback", args.max_buyback),
                       ("--limit", args.limit)) if value is not None)
+                  + (f" --min-profit {args.min_profit}" if args.min_profit != 1 else "")
                   + (" --no-db" if args.no_db else ""))
 
     # 買取価格は開始時点のものを保存し、再開しても同じ価格で判定を続ける
@@ -294,6 +305,12 @@ def main(argv: list[str] | None = None) -> int:
     target_jans = {b.jan_code for b in targets}
     candidate_count = sum(len(r["candidates"]) for jan, r in done.items() if jan in target_jans)
     pending = [b for b in targets if b.jan_code not in done]
+    if args.stage == "save":
+        # 確認済みの分だけを保存する: 未検索の JAN は対象から外し、新しい検索はしない
+        if pending:
+            logger.warning("未検索の JAN %d 件は対象から外して保存する", len(pending))
+        targets = [b for b in targets if b.jan_code in done]
+        pending = []
     logger.info("target JANs: %d (済み %d, 残り %d) run=%s", len(targets), len(targets) - len(pending),
                 len(pending), run_name)
 
@@ -351,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
     pending_pages = [c for c in candidates if (c["store_id"], c["item_code"]) not in checked]
     logger.info("候補 %d 件 (確認済み %d, 残り %d)", len(candidates), len(candidates) - len(pending_pages),
                 len(pending_pages))
+    unchecked = 0
+    if args.stage == "save":
+        unchecked, pending_pages = len(pending_pages), []
 
     pages = PageClient()
     finished = len(candidates) - len(pending_pages)
@@ -390,9 +410,15 @@ def main(argv: list[str] | None = None) -> int:
     statuses: dict[str, int] = {}
     for r in records:
         statuses[r["status"]] = statuses.get(r["status"], 0) + 1
-    rows = sorted((r["row"] for r in records if r["status"] == "result"), key=lambda r: -r["profit_rate"])
-    logger.info("確定判定完了: 黒字 %d 件 / 候補 %d 件 (内訳 %s)", len(rows), len(candidates), statuses)
-    if len(records) < len(candidates):
+    # 惜しい赤字 (row 付きの not_profitable) も --min-profit 以上なら結果に含める
+    rows = sorted((r["row"] for r in records if "row" in r and r["row"]["profit"] >= args.min_profit),
+                  key=lambda r: -r["profit_rate"])
+    logger.info("確定判定完了: 結果 %d 件 (利益 %+d 円以上) / 候補 %d 件 (内訳 %s)", len(rows), args.min_profit,
+                len(candidates), statuses)
+    if args.stage == "save":
+        if unchecked:
+            logger.warning("未確認の候補 %d 件を残したまま、確認済みの分を保存する。続き: %s", unchecked, resume_cmd)
+    elif len(records) < len(candidates):
         logger.warning("未確認の候補が %d 件残っている。やり直す: %s", len(candidates) - len(records), resume_cmd)
         return 1
     for r in rows[:10]:
