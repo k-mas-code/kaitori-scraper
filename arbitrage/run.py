@@ -45,6 +45,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--stage", choices=("api", "all"), default="all",
                    help="api = 商品検索APIでの絞り込みまで / all = 商品ページの確定判定と保存まで (既定)")
     p.add_argument("--no-db", action="store_true", help="Supabase に保存しない (結果はローカルの pages.jsonl のみ)")
+    p.add_argument("--check-config", action="store_true",
+                   help="config/campaigns.yaml と店舗リストを読み、解釈した内容を表示して終了する (通信なし)")
     args = p.parse_args(argv)
     if not 0 <= args.coupon_margin < 1:
         p.error("--coupon-margin は 0 以上 1 未満")
@@ -106,6 +108,44 @@ def check_candidate(pages: PageClient, candidate: dict, cfg, stores) -> dict:
     return {**key, "status": "result", "row": {**row, "checked_at": datetime.now().astimezone().isoformat()}}
 
 
+def print_config(cfg, stores) -> None:
+    """設定をどう解釈したかを、人が読める形で表示する"""
+    def describe(c) -> str:
+        cap = "上限なし" if c.cap is None else f"上限 {c.cap:,}pt"
+        base = "税込" if c.base == "tax_included" else "税抜"
+        minimum = f"、{c.min_purchase:,}円以上" if c.min_purchase else ""
+        return f"{float(c.rate) * 100:g}% ({base}価格に対して、{cap}{minimum})"
+
+    targets = {"all": "すべての店", "bsplus": "その日ボーナスストアPlus枠がある店", "good_store": "優良ストア"}
+    print(f"実行日 {stores.run_date} / 店舗リスト {stores.source_file}")
+    print("\n[common] 毎回付く分")
+    for c in cfg.common:
+        print(f"  - {c.name}: {describe(c)}")
+    print("\n[campaigns] その日のキャンペーン" + ("" if cfg.campaigns else " (なし)"))
+    for c in cfg.campaigns:
+        if c.target == "page":
+            target = f"商品ページの内訳に「{c.page_title}」を含む行が出ている店"
+        elif isinstance(c.target, tuple):
+            target = "指定の店: " + ", ".join(c.target)
+            unknown = [t for t in c.target if t not in stores.stores]
+            if unknown:
+                target += f"  ※店舗リストに無い店ID: {', '.join(unknown)}"
+        else:
+            target = targets[c.target]
+        entry = "、要エントリー" if c.entry_required else ""
+        print(f"  - {c.component.name}: {describe(c.component)}{entry}\n      対象: {target}")
+    slots = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
+    cap = "上限なし" if cfg.bsplus.cap is None else f"上限 {cfg.bsplus.cap:,}pt"
+    print(f"\n[bsplus] ボーナスストアPlus: {cap}。この日の枠あり {slots} 店 / 全 {len(stores.stores)} 店")
+    if stores.global_bonus_labels:
+        good = "+2% に重ねて +3% (計 +5%)" if cfg.bsplus.good_store_bonus_stacks else "+3% のみ"
+        print(f"  全体加算日 ({stores.global_bonus_labels}): 枠のある店 +2%、優良ストアは {good}")
+    else:
+        print("  全体加算日ではない")
+    print("\n[自動で読む分] ストアポイント 1% + 上乗せ (商品ページ)、ボーナスストアPlus の率 (店舗リスト)")
+    print("\n設定に問題は見つかりませんでした。")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -120,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
     bsplus_stores = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
     logger.info("stores: %d (うち %s のボーナスストアPlus枠あり %d, 全体加算 %s)",
                 len(stores.stores), args.date, bsplus_stores, stores.global_bonus_labels or "なし")
+
+    if args.check_config:
+        print_config(cfg, stores)
+        return 0
 
     try:
         client = ItemSearchClient(os.environ.get("YAHOO_CLIENT_ID", ""))
