@@ -73,7 +73,7 @@ GitHub Pages (docs/)
 Yahoo!ショッピングで買って買取店に売ると利益が出る商品を探す。**ローカル実行専用** (商品ページの取得が Actions の IP だとブロックされやすいため)。
 
 ```bash
-.venv/bin/python -m arbitrage.run --coupon-margin 0.2              # 全件 (API だけで 4.5 時間以上)
+.venv/bin/python -m arbitrage.run --coupon-margin 0.2              # 全件 (約1.6万 JAN。API だけで 9〜10 時間)
 .venv/bin/python -m arbitrage.run --limit 100 --no-db              # 試行: 買取価格の高い順に 100 JAN、DB 保存なし
 .venv/bin/python -m arbitrage.run --stage api                      # 商品検索APIでの絞り込みまで
 .venv/bin/python -m pytest -q tests                                # 単体テスト
@@ -83,7 +83,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 - 利益率 = (買取価格 − 実質価格) / 実質価格。送料・手数料・減額リスクは考えない
 - 流れ (`arbitrage/run.py`)
   1. 買取価格 (`buyback.py`): `price_history` の直近7日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値
-  2. 商品検索API v3 (`yahoo_api.py`): `jan_code` で新品・在庫ありを価格の安い順に取得。1 秒 1 回、429 は待って再試行
+  2. 商品検索API v3 (`yahoo_api.py`): `jan_code` で新品・在庫ありを価格の安い順に取得。**実測の制限は時計の 1 分ごとに 30 回** (公式の記載は 1 秒 1 回) → 2.15 秒間隔。429 は次の分の変わり目まで待って再試行
   3. 絞り込み (`prefilter.py`): 店舗リストの店だけ残し、甘い実質価格 `販売価格 × (1 − クーポン余地) − クーポン前の価格で付きうるポイント` が買取価格を下回るものを候補にする
   4. 確定判定 (`yahoo_page.py` / `finalize.py`): 商品ページを取得し、実際の上乗せ率とクーポンで再計算。黒字だけを結果にする
   5. 保存 (`db.py`): `arbitrage_runs` / `arbitrage_results` に service_role キーで upsert

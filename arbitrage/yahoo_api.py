@@ -10,11 +10,14 @@ import requests
 logger = logging.getLogger(__name__)
 
 ENDPOINT = "https://shopping.yahooapis.jp/ShoppingWebService/V3/itemSearch"
-MIN_INTERVAL = 1.05          # 1 クエリー/秒 の制限
+# 公式の記載は「1 クエリー/秒」だが、実測 (2026-10-04) では時計の 1 分ごとに 30 回までで、
+# 31 回目から 429 "total count of AppID reached the URL's limit count" になる → 1 分 28 回に抑える
+MIN_INTERVAL = 2.15
 RESULTS_PER_PAGE = 50
 MAX_START_PLUS_RESULTS = 1000  # API の上限 (start + results)
 MAX_RETRIES = 5
-RATE_LIMIT_BACKOFF = 30      # 429 のときの待機秒数 (回数に比例して延ばす)
+RATE_LIMIT_MARGIN = 3        # 429 のときは次の「分」の変わり目 + この秒数まで待つ
+RATE_LIMIT_BACKOFF = 60      # それでも 429 が続くときに足す待機秒数 (回数に比例して延ばす)
 NETWORK_BACKOFF = 10         # 通信失敗・5xx のときの待機秒数 (回数に比例して延ばす)
 
 
@@ -66,8 +69,8 @@ class ItemSearchClient:
                 time.sleep(NETWORK_BACKOFF * attempt)
                 continue
             if resp.status_code == 429:
-                wait = RATE_LIMIT_BACKOFF * attempt
-                logger.warning("itemSearch 429, sleep %ds (%d/%d)", wait, attempt, MAX_RETRIES)
+                wait = 60 - time.time() % 60 + RATE_LIMIT_MARGIN + RATE_LIMIT_BACKOFF * (attempt - 1)
+                logger.warning("itemSearch 429, sleep %.0fs (%d/%d)", wait, attempt, MAX_RETRIES)
                 time.sleep(wait)
                 continue
             if resp.status_code in (401, 403):
