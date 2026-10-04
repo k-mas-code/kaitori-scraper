@@ -1,0 +1,41 @@
+# ポイント設定。config/campaigns.yaml にコピーして、実行のたびに編集する。
+#
+# - rate は小数 (5% = 0.05)。
+# - 上限は cap_per_order (1注文あたり) / cap_per_period (期間あたり)。null = 上限なし。
+#   「その商品を 1 つだけ買う」前提なので、両方あれば小さい方を使う。
+# - base: tax_excluded (税抜のクーポン後価格に掛ける。既定) / tax_included (税込)。
+# - ここに書かないもの:
+#     ストアポイント (基本 1% + 店ごとの上乗せ)  → 商品ページから読む
+#     ボーナスストアPlus (+4% / +9%)             → 店舗リスト (data/*.xlsx) の日別枠から読む
+#
+# ↓ 率と上限は例。自分の会員状態とその日のキャンペーンに合わせて必ず書き換えること。
+
+common:   # 毎回共通で付く分
+  - name: PayPayカード決済
+    rate: 0.01
+    base: tax_included
+    cap_per_order: null
+    cap_per_period: null
+  - name: LYPプレミアム会員
+    rate: 0.02
+    cap_per_order: null
+    cap_per_period: 5000
+
+campaigns:   # その日のキャンペーン (複数併用可)
+  - name: プレミアムな日曜日
+    rate: 0.05
+    cap_per_order: null
+    cap_per_period: 3000
+    min_purchase: 5000        # 最低購入額 (税込・クーポン後)。無ければ省略
+    entry_required: true      # 記録用 (計算には使わない)
+    # target: all / bsplus (その日ボーナスストアPlus枠がある店) / good_store (優良ストア)
+    #         / page (商品ページのポイント内訳に page_title を含む行が出ている店)
+    #         / [store-id-1, store-id-2] (特定のストアID)
+    target: page
+    page_title: プレミアムな日曜日
+
+bsplus:   # ボーナスストアPlus の上限と全体加算
+  cap_per_order: null
+  cap_per_period: null
+  # 全体加算日 (店舗リスト 1 行目が「+2」「+2/+3」の日) に足す率。加算しないなら null。
+  global_bonus: null
