@@ -36,8 +36,27 @@ class Campaign:
 @dataclass(frozen=True)
 class BsPlusConfig:
     cap: int | None = None             # ボーナスストアPlus分の付与上限 (pt)
-    # 全体加算日 (店舗リスト 1 行目の「+2」「+2/+3」) に足す率。None = 加算しない
-    global_bonus: Decimal | None = None
+    # 全体加算日「+2/+3」の優良ストア: False = +3% のみ / True = +2% に重ねて +3% (計 +5%)
+    good_store_bonus_stacks: bool = False
+
+
+COMPONENT_KEYS = {"name", "rate", "base", "cap_per_order", "cap_per_period", "min_purchase"}
+CAMPAIGN_KEYS = COMPONENT_KEYS | {"target", "page_title", "entry_required"}
+BSPLUS_KEYS = {"cap_per_order", "cap_per_period", "good_store_bonus_stacks"}
+
+
+def _check_keys(entry: dict, allowed: set[str], where: str) -> None:
+    """キー名の書き間違い (cap, min_purchace 等) を「上限なし」として黙って通さない"""
+    unknown = set(entry) - allowed
+    if unknown:
+        raise ConfigError(f"{where}: 不明なキー {sorted(unknown)} (使えるキー: {sorted(allowed)})")
+
+
+def _bool(entry: dict, key: str, where: str, default: bool = False) -> bool:
+    value = entry.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where}: {key} は true / false。値: {value!r}")
+    return value
 
 
 @dataclass(frozen=True)
@@ -71,10 +90,11 @@ def _cap(entry: dict, where: str) -> int | None:
     return min(caps) if caps else None
 
 
-def _component(entry: dict, where: str) -> PointComponent:
+def _component(entry: dict, where: str, allowed: set[str] = COMPONENT_KEYS) -> PointComponent:
     if not isinstance(entry, dict) or not entry.get("name"):
         raise ConfigError(f"{where}: name が必要")
     where = f"{where} ({entry['name']})"
+    _check_keys(entry, allowed, where)
     base = entry.get("base", TAX_EXCLUDED)
     if base not in (TAX_EXCLUDED, TAX_INCLUDED):
         raise ConfigError(f"{where}: base は {TAX_EXCLUDED} か {TAX_INCLUDED}")
@@ -88,7 +108,7 @@ def _component(entry: dict, where: str) -> PointComponent:
 
 
 def _campaign(entry: dict, where: str) -> Campaign:
-    component = _component(entry, where)
+    component = _component(entry, where, CAMPAIGN_KEYS)
     where = f"{where} ({component.name})"
     target = entry.get("target", TARGET_ALL)
     if isinstance(target, list):
@@ -101,7 +121,7 @@ def _campaign(entry: dict, where: str) -> Campaign:
     if target == TARGET_PAGE and not page_title:
         raise ConfigError(f"{where}: target=page には page_title (内訳の行名に含まれる文字列) が必要")
     return Campaign(component=component, target=target,
-                    entry_required=bool(entry.get("entry_required", False)),
+                    entry_required=_bool(entry, "entry_required", where),
                     page_title=page_title)
 
 
@@ -122,9 +142,11 @@ def load_campaigns(path: Path = DEFAULT_CAMPAIGNS_PATH) -> CampaignConfig:
         raise ConfigError(f"{path}: name が重複している")
 
     bs_raw = raw.get("bsplus") or {}
-    global_bonus = bs_raw.get("global_bonus")
+    if not isinstance(bs_raw, dict):
+        raise ConfigError("bsplus: マッピングにする")
+    _check_keys(bs_raw, BSPLUS_KEYS, "bsplus")
     bsplus = BsPlusConfig(
         cap=_cap(bs_raw, "bsplus"),
-        global_bonus=None if global_bonus is None else _rate({"rate": global_bonus}, "bsplus.global_bonus"),
+        good_store_bonus_stacks=_bool(bs_raw, "good_store_bonus_stacks", "bsplus"),
     )
     return CampaignConfig(common=common, campaigns=campaigns, bsplus=bsplus, raw=raw)
