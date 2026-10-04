@@ -531,7 +531,7 @@ function renderPriceTable({ jan, quantity, dbBySource, fallbackUrlBySource, exte
     if (!info) return null;
     let url = info.detail_url || fallbackUrlBySource.get(src);
     if (src === 'kaitorishouten') {
-      url = `https://www.kaitorishouten-co.jp/?name=${encodeURIComponent(jan)}`;
+      url = `https://www.kaitorishouten-co.jp/products/list?name=${encodeURIComponent(jan)}`;
     }
     return {
       src, price: info.price, scraped_date: info.scraped_date, url, manual: false,
