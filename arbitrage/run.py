@@ -23,7 +23,9 @@ from .finalize import NOT_PROFITABLE, build_result, skip_reason
 from .prefilter import max_price_rate, price_can_never_pass, select_candidates
 from .state import RunState
 from .stores import StoreListError, load_stores
-from .yahoo_page import Blocked, PageClient, PageFormatError, coupon_is_valid
+from .coupon_report import write_coupon_report
+from .yahoo_page import (Blocked, PageClient, PageFormatError, coupon_is_valid, parse_all_coupons,
+                         parse_usable_coupons)
 from .yahoo_api import (MAX_START_PLUS_RESULTS, RESULTS_PER_PAGE, ItemSearchClient, JanSearchError,
                         YahooApiError)
 
@@ -110,17 +112,21 @@ def check_candidate(pages: PageClient, candidate: dict, cfg, stores) -> dict:
     if reason:
         return {**key, "status": reason}
     store = stores.stores[page.store_id]
+    coupon_data = pages.fetch_coupon_data(page)
+    # 見つけたクーポンはすべて記録する (この商品には使えないものも、あとで一覧にして報告する)
+    seen = {"coupons_seen": parse_all_coupons(coupon_data), "store_name": page.store_name,
+            "item_name": page.name, "item_url": candidate["item_url"], "sale_price": page.price}
     coupon, detail = None, None
-    for c in pages.fetch_coupons(page)[:2]:   # 値引きの大きい順に、有効なものが見つかるまで (最大 2 件)
+    for c in parse_usable_coupons(coupon_data)[:2]:   # 値引きの大きい順に、有効なものが見つかるまで (最大 2 件)
         d = pages.fetch_coupon_detail(c, page.item_code)
         if d and coupon_is_valid(d, page):
             coupon, detail = c, d
             break
     row = build_result(candidate, page, store, cfg, stores, coupon, detail)
     if row is None:
-        return {**key, "status": NOT_PROFITABLE, "sale_price": page.price,
-                "coupon_discount": coupon.discount if coupon else 0}
-    return {**key, "status": "result", "row": {**row, "checked_at": datetime.now().astimezone().isoformat()}}
+        return {**key, **seen, "status": NOT_PROFITABLE, "coupon_discount": coupon.discount if coupon else 0}
+    return {**key, **seen, "status": "result",
+            "row": {**row, "checked_at": datetime.now().astimezone().isoformat()}}
 
 
 def print_config(cfg, stores) -> None:
@@ -326,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("  %+.1f%% %+d円 %s [%s] 実質%d → %s %d", r["profit_rate"] * 100, r["profit"],
                     r["item_name"][:30], r["store_id"], r["effective_price"], r["buyback_source"],
                     r["buyback_price"])
+
+    coupon_rows = write_coupon_report(records, state.dir / "coupons.csv")
+    logger.info("見つけたクーポン %d 種類 (うちログイン不要 %d) → %s", len(coupon_rows),
+                sum(1 for c in coupon_rows if c["ログイン"] == "不要"), state.dir / "coupons.csv")
 
     if args.no_db:
         logger.info("DB 保存なし (--no-db)。結果は %s", state.pages_path)
