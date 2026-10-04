@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ MAX_PAGES = 400
 OUTPUT_DIR = Path(__file__).parent / "output"
 REQUEST_INTERVAL = 1.5
 MAX_RETRIES = 3
+MIN_EXPECTED_PRODUCTS = 5000  # 通常件数の約半分。下回ったら異常とみなし exit 1
 RATE_LIMIT_BACKOFF = 30
 
 HEADERS = {
@@ -218,3 +220,9 @@ if __name__ == "__main__":
         logger.info("DB saved: %s", counts)
     else:
         logger.info("DB skipped (SUPABASE_URL/SUPABASE_KEY not set)")
+
+    # サイト構造変更やブロックで件数が激減しても「成功」で終わらないようにする
+    if total < MIN_EXPECTED_PRODUCTS:
+        logger.error("too few products: %d < %d (site layout change or block?)",
+                     total, MIN_EXPECTED_PRODUCTS)
+        sys.exit(1)
