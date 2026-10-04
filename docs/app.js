@@ -759,6 +759,10 @@ function restoreHistory() {
 
 restoreHistory();
 
+// ?jan=4902370548501 で開かれたら、そのJANの比較を表示 (利益商品リストからのリンク用)
+const janParam = new URLSearchParams(location.search).get('jan');
+if (janParam && /^\d{8,14}$/.test(janParam)) directJanLookup(janParam);
+
 // ---------- ユーティリティ ----------
 function escapeHtml(s) {
   if (s == null) return '';
