@@ -16,7 +16,12 @@ GitHub Pages (docs/)
       ├─ index.html  検索UI (検索 + 候補 + 価格テーブル + カメラスキャナ)
       ├─ app.js      Supabase JS SDK 経由で products / price_history を読み取り
       ├─ scanner.js  html5-qrcode (JANバーコード読み取り)
-      └─ config.js   SUPABASE_URL + anon public key (RLSでSELECTのみ許可)
+      ├─ config.js   SUPABASE_URL + anon public key (RLSでSELECTのみ許可)
+      └─ arbitrage.html / arbitrage.js  利益商品リスト (ログインしたオーナーだけが読める)
+
+ローカル実行のみ (WSL から月3〜4回。GitHub Actions には載せない)
+  └─ python -m arbitrage.run → Yahoo!ショッピング商品検索API + 商品ページ
+                             → Supabase (arbitrage_runs / arbitrage_results)
 ```
 
 | 項目 | 値 |
@@ -63,10 +68,51 @@ GitHub Pages (docs/)
 - `scrape.yml` は各ステップ `continue-on-error: true` + 最後の「Fail job if any scraper failed」ステップでジョブを赤にする (1サイト失敗でも残りは実行)
 - 背景: 2026-10 に kaitorishouten / rudeya がリニューアルされ、HTTP 200 のまま抽出0件で「成功」扱いになっていた
 
+## 利益商品の探索 (`arbitrage/`)
+
+Yahoo!ショッピングで買って買取店に売ると利益が出る商品を探す。**ローカル実行専用** (商品ページの取得が Actions の IP だとブロックされやすいため)。
+
+```bash
+.venv/bin/python -m arbitrage.run --coupon-margin 0.2              # 全件 (API だけで 4.5 時間以上)
+.venv/bin/python -m arbitrage.run --limit 100 --no-db              # 試行: 買取価格の高い順に 100 JAN、DB 保存なし
+.venv/bin/python -m arbitrage.run --stage api                      # 商品検索APIでの絞り込みまで
+.venv/bin/python -m pytest -q tests                                # 単体テスト
+```
+
+- 判定式: `買取価格 > (販売価格 − ストアクーポン) − 付与ポイント`。ポイントは「1 つだけ買う」前提で、枠ごとに `min(floor(クーポン後の税抜価格 × 率), 上限)` を合計。税抜 = 税込 − floor(税込 × 10/110)
+- 利益率 = (買取価格 − 実質価格) / 実質価格。送料・手数料・減額リスクは考えない
+- 流れ (`arbitrage/run.py`)
+  1. 買取価格 (`buyback.py`): `price_history` の直近7日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値
+  2. 商品検索API v3 (`yahoo_api.py`): `jan_code` で新品・在庫ありを価格の安い順に取得。1 秒 1 回、429 は待って再試行
+  3. 絞り込み (`prefilter.py`): 店舗リストの店だけ残し、甘い実質価格 `販売価格 × (1 − クーポン余地) − クーポン前の価格で付きうるポイント` が買取価格を下回るものを候補にする
+  4. 確定判定 (`yahoo_page.py` / `finalize.py`): 商品ページを取得し、実際の上乗せ率とクーポンで再計算。黒字だけを結果にする
+  5. 保存 (`db.py`): `arbitrage_runs` / `arbitrage_results` に service_role キーで upsert
+- 入力ファイル (どちらも Git に含めない)
+  - `data/yahoo_pp_stores_5genres.xlsx`: 店舗リスト。「全ジャンル」(日別のボーナスストアPlus枠 +4/+9、優良ストア)、「ポイント上乗せ調査」(最大上乗せ率。無い店は 14% と仮定)、「除外リスト（非適格）」。**日別枠は掲載期間内の日付しか無い** → 期間外の日付で実行するとエラー。新しいリストに差し替える
+  - `config/campaigns.yaml`: 共通分・キャンペーンの率/上限/最低購入額/対象。実行のたびに編集する。ひな形は `config/campaigns.example.yaml`。キー名を間違えるとエラーで止まる
+  - `.env`: `YAHOO_CLIENT_ID` (商品検索API)、`SUPABASE_URL` / `SUPABASE_KEY` (service_role、保存用)
+- ポイントの出どころ
+  - ストアポイント (基本 1% + 上乗せ): 商品ページ。上乗せ率は専用項目が無く `totalPointRatio − 標準で付く各行の率の合計`
+  - ボーナスストアPlus (+4% / +9%): 店舗リストの実行日の枠。全体加算日は枠のある店 +2%、「+2/+3」の日の優良ストアは +3%
+  - それ以外 (PayPay、LYP、日曜 +5% など): `campaigns.yaml`。対象ストア限定のものは `target: page` (商品ページの内訳にその行が出ている店)
+- 再開: 状態は `data/arbitrage/{run名}/` (`meta.json` / `buyback.json` / `api.jsonl` / `pages.jsonl`)。中断時のログに出る「再開」コマンドで続きから。条件 (日付・設定・店舗リスト) を変えたら `--run-name` で別名にする
+- 結果ページ `docs/arbitrage.html`: Supabase Auth のメールリンクでログイン。RLS でオーナー (`arbitrage_owner` の 1 行) だけが読める。スキーマは `db/arbitrage.sql`
+
+### 商品ページの落とし穴 (2026-10-04 調査)
+- ストアクーポンは HTML に無い。`POST /syene-bff/v1/pc/coupon/v3/{店舗ID}/{商品コード}` で取る。ページが発行する匿名 Cookie と `page.crumb` が必要 (無いと 401)
+- クーポン一覧は商品単位で絞り込み済み。詳細ページの対象商品リストは一部しか載らないので、対象判定に使わない
+- ページのポイント数はクーポン適用前の価格で計算されている → 率だけ採って再計算する
+- ページの「上限到達」フラグは上限で切られていても false のまま → 上限は `campaigns.yaml` で持つ
+- ページの合計率には未ログイン時の仮の表示 (LINE 連携 2.5%、PayPay 残高 0.5%) が含まれる → そのまま使うと二重計上
+- 日曜 +5% は行が出ていても、安い商品 (5,000円前後未満) には付かない → `min_purchase` で指定
+- 色・サイズ違いのある商品 (`individualItemList`) は確定判定から除外している
+- 結果ページでログインすると同じサイトの検索ページもログイン状態になり、公開テーブルが 0 件になる → `arbitrage.js` はログイン情報の保存先 (`storageKey`) を分けている
+
 ## DBスキーマ概要
 
 - `products` (jan_code PK, name, source, category, ...)
 - `price_history` (jan_code, source, condition, scraped_date, price, ...) - 主キー4列
+- `arbitrage_runs` / `arbitrage_results` / `arbitrage_owner` (`db/arbitrage.sql`): 利益商品の結果。オーナーだけ SELECT 可、anon は常に 0 件
 - 価格推移SQLは README 参照
 - **落とし穴**: `products` の主キーは `jan_code` のみ。`source` は最後に書いたサイトで上書きされるので、サイト別の件数は `products` ではなく **`price_history` で数える** (`where scraped_date = ... group by source`)
 
