@@ -8,12 +8,29 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 from pathlib import Path
+from typing import IO
 
 from .config import ROOT
 
 RUNS_DIR = ROOT / "data" / "arbitrage"
+
+
+def lock_file(path: Path) -> IO | None:
+    """path を排他ロックして開いたファイルを返す。他のプロセス (や別の open) が持っていれば None。
+
+    ロックは返したファイルを close するか、プロセスが終わる (kill -9 を含む) と外れる。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
 
 
 class RunState:
@@ -24,6 +41,7 @@ class RunState:
         self.buyback_path = self.dir / "buyback.json"
         self.api_path = self.dir / "api.jsonl"
         self.pages_path = self.dir / "pages.jsonl"
+        self.lock_path = self.dir / "run.lock"
 
     def _load_json(self, path: Path):
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None

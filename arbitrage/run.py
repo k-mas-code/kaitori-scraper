@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import json
 import logging
 import os
 import sys
@@ -21,9 +24,13 @@ from .buyback import Buyback, load_buyback_prices
 from . import db
 from .config import (ROOT, CampaignConfig, ConfigError, Settings, active_config, load_settings_file,
                      parse_settings, TARGET_PAGE)
+from .describe import print_config  # noqa: F401  (--check-config の表示。テストからも run 経由で使う)
 from .finalize import NOT_PROFITABLE, build_result, skip_reason
 from .prefilter import max_price_rate, price_can_never_pass, select_candidates
-from .state import RunState
+from .progress import (EXIT_CANCELLED, STAGE_API, STAGE_PAGES, STAGE_SAVING, STOP_CANCELLED, STOP_NOTES,
+                       Clock, build_reporter, local_now, parse_deadline)
+from .scope import DEFAULT_REACH_SLACK, MAX_REACH_SLACK, PAGE_SCOPES, SCOPE_REACHABLE, plan_page_checks
+from .state import RunState, lock_file
 from .stores import StoreList, StoreListError, load_stores
 from .coupon_report import write_coupon_report
 from .yahoo_page import (Blocked, PageClient, PageFormatError, coupon_expired, coupon_is_valid,
@@ -59,6 +66,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--min-profit", type=int, default=1,
                    help=f"利益がこの金額 (円) 以上の商品を結果にする。既定は 1 (黒字のみ)。"
                         f"-1000 なら 1,000 円までの赤字も載せる (下限 {KEEP_ROW_MIN_PROFIT})")
+    p.add_argument("--page-scope", choices=PAGE_SCOPES, default=SCOPE_REACHABLE,
+                   help="確定判定の範囲。reachable = クーポン余地なしの見積もりで届きそうな候補だけ (既定) / "
+                        "all = 全候補 (届きそうな候補を先に確認する)")
+    p.add_argument("--reach-slack", type=float, default=DEFAULT_REACH_SLACK,
+                   help=f"「届きそう」の判定で見込む余裕 (販売価格に対する比率。既定 {DEFAULT_REACH_SLACK}、"
+                        f"0 以上 {MAX_REACH_SLACK} 以下)。公開クーポンなどで縮まる分")
+    p.add_argument("--deadline", type=parse_deadline, default=None,
+                   help="終了時刻の上限 (ISO 8601。例 2026-10-05T23:00。タイムゾーン無しはローカル時刻)。"
+                        "過ぎたらそこで打ち切り、確認済みの分だけを保存する")
+    p.add_argument("--request-id", type=int, default=None,
+                   help="結果ページからの依頼 (arbitrage_research_requests) の ID。進捗を書き戻し、"
+                        "中止の依頼があれば打ち切る (待ち受け python -m arbitrage.worker が付ける)")
     p.add_argument("--no-db", action="store_true", help="Supabase に保存しない (結果はローカルの pages.jsonl のみ)")
     p.add_argument("--check-config", action="store_true",
                    help="設定と店舗リストを読み、解釈した内容を表示して終了する "
@@ -70,6 +89,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("--limit は 1 以上")
     if args.min_profit < KEEP_ROW_MIN_PROFIT:
         p.error(f"--min-profit は {KEEP_ROW_MIN_PROFIT} 以上")
+    if not 0 <= args.reach_slack <= MAX_REACH_SLACK:
+        p.error(f"--reach-slack は 0 以上 {MAX_REACH_SLACK} 以下")
     return args
 
 
@@ -148,76 +169,6 @@ def check_candidate(pages: PageClient, candidate: dict, cfg: CampaignConfig, sto
     return {**key, **seen, "status": "result", "row": row}
 
 
-TARGET_LABELS = {"all": "すべての店", "bsplus": "その日ボーナスストアPlus枠がある店",
-                 "bsplus_good": "その日ボーナスストアPlus枠があり、かつ優良ストア", "good_store": "優良ストア"}
-
-
-def describe_stores(store_ids: tuple[str, ...], stores: StoreList) -> str:
-    text = "指定の店: " + ", ".join(store_ids)
-    unknown = [s for s in store_ids if s not in stores.stores]
-    return text + (f"  ※店舗リストに無い店ID: {', '.join(unknown)}" if unknown else "")
-
-
-def describe_coupon(c) -> str:
-    if c.type == "fixed":
-        value = f"{c.value:,}円OFF"
-    else:
-        limit = "" if c.max_discount is None else f" (値引き上限 {c.max_discount:,}円)"
-        value = f"{float(c.value) * 100:g}%OFF{limit}"
-    minimum = purchase_range_text(c)
-    period = f"、期間 {c.valid_from or '指定なし'} 〜 {c.valid_until or '指定なし'}"
-    return f"{value}{minimum}{period}"
-
-
-def purchase_range_text(c) -> str:
-    """最低・最高購入額の表示 (例: 「、5,000〜19,999円」)"""
-    if getattr(c, "max_purchase", None) is not None:   # 手持ちクーポンには最高購入額が無い
-        return f"、{c.min_purchase:,}〜{c.max_purchase:,}円"
-    return f"、{c.min_purchase:,}円以上" if c.min_purchase else ""
-
-
-def print_config(settings: Settings, cfg: CampaignConfig, stores: StoreList, source: str) -> None:
-    """設定をどう解釈したかを、人が読める形で表示する"""
-    def describe(c) -> str:
-        cap = "上限なし" if c.cap is None else f"上限 {c.cap:,}pt"
-        base = "税込" if c.base == "tax_included" else "税抜"
-        minimum = purchase_range_text(c)
-        return f"{float(c.rate) * 100:g}% ({base}価格に対して、{cap}{minimum})"
-
-    print(f"設定の読み込み元: {source}")
-    override = "" if stores.run_date == settings.purchase_date else " ← --date で上書き"
-    print(f"購入予定日 (設定): {settings.purchase_date} / 実行日: {stores.run_date}{override}")
-    print(f"店舗リスト: {stores.source_file}")
-    print("\n[common] 毎日付く分" + ("" if cfg.common else " (なし)"))
-    for c in cfg.common:
-        print(f"  - {c.name}: {describe(c)}")
-    print(f"\n[campaigns] {stores.run_date} に有効なキャンペーン" + ("" if cfg.campaigns else " (なし)"))
-    for c in cfg.campaigns:
-        if c.target == "page":
-            target = f"商品ページの内訳に「{c.page_title}」を含む行が出ている店"
-        elif c.target == "stores":
-            target = describe_stores(c.store_ids, stores)
-        else:
-            target = TARGET_LABELS[c.target]
-        entry = "、要エントリー" if c.entry_required else ""
-        print(f"  - {c.component.name}: {describe(c.component)}{entry}\n      対象: {target}")
-    print(f"  日付外で無効: {len(settings.campaigns) - len(cfg.campaigns)} 件")
-    print(f"\n[coupons] {stores.run_date} に使える手持ちクーポン (1 注文 1 枚、併用なし)"
-          + ("" if cfg.coupons else " (なし)"))
-    for c in cfg.coupons:
-        target = describe_stores(c.store_ids, stores) if c.target == "stores" else TARGET_LABELS["all"]
-        print(f"  - {c.name}: {describe_coupon(c)}\n      対象: {target}")
-    print(f"  期間外で無効: {len(settings.coupons) - len(cfg.coupons)} 件")
-    slots = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
-    cap = "上限なし" if cfg.bsplus.cap is None else f"上限 {cfg.bsplus.cap:,}pt"
-    print(f"\n[bsplus] ボーナスストアPlus: {cap}。この日の枠あり {slots} 店 / 全 {len(stores.stores)} 店")
-    if stores.global_bonus_labels:
-        print(f"  店舗リストではこの日は全体加算日 ({stores.global_bonus_labels})。加算分は自動では付けないので、"
-              "campaigns に target=bsplus / bsplus_good の行があるか確認する")
-    print("\n[自動で読む分] ストアポイント 1% + 上乗せ (商品ページ)、ボーナスストアPlus の率 (店舗リスト)")
-    print("\n設定に問題は見つかりませんでした。")
-
-
 def load_settings(config_file: Path | None) -> tuple[Settings, str]:
     """設定と、その読み込み元の説明。既定は Supabase、--config-file があればそのファイル"""
     if config_file is not None:
@@ -232,7 +183,24 @@ def load_settings(config_file: Path | None) -> tuple[Settings, str]:
         raise ConfigError(f"Supabase の設定: {e}") from e
 
 
-def main(argv: list[str] | None = None) -> int:
+def count_results(records, min_profit: int) -> int:
+    """利益が min_profit 以上の件数 (惜しい赤字の row も数える)"""
+    return sum(1 for r in records if "row" in r and r["row"]["profit"] >= min_profit)
+
+
+def conditions_suffix(meta: dict) -> str:
+    """再開時に一致を求める条件 (meta) から決まる run 名の接尾辞。同じ条件なら同じ名前になる"""
+    digest = hashlib.sha256(json.dumps(meta, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return f"c{digest[:8]}"
+
+
+def main(argv: list[str] | None = None, clock: Clock = local_now) -> int:
+    """clock は現在時刻の取得 (終了時刻の上限・進捗の間隔に使う。テストで差し替える)"""
+    with contextlib.ExitStack() as stack:   # run フォルダのロックを、どの経路で終わっても外す
+        return _main(argv, clock, stack)
+
+
+def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     load_dotenv(ROOT / ".env")
@@ -272,6 +240,22 @@ def main(argv: list[str] | None = None) -> int:
     meta = {"run_date": run_date.isoformat(), "coupon_margin": args.coupon_margin,
             "config": cfg.raw, "store_list": stores.source_file}
     previous = state.load_meta()
+    if (previous is not None and args.request_id is not None and args.run_name is None
+            and any(previous.get(k) != v for k, v in meta.items())):
+        # 結果ページからの依頼では --run-name を付けられない。同じ日に設定を変えて実行し直したときは、
+        # 条件から決まる別名にする (古い条件の結果と混ぜない)。依頼ごとの名前にはしない:
+        # 中断・打ち切りの後に同じ条件で依頼し直せば、同じ名前になって続きから再開できる
+        run_name = f"{run_name}-{conditions_suffix(meta)}"
+        state = RunState(run_name)
+        previous = state.load_meta()
+        logger.warning("同じ日の run が別の条件で開始されているので、run 名を %s にして%s", run_name,
+                       "新しく始める" if previous is None else "続きから再開する")
+    # 同じ run フォルダを 2 つのプロセスで同時に進めない (api.jsonl / pages.jsonl への二重追記と API の二重呼び出しを防ぐ)
+    lock = lock_file(state.lock_path)
+    if lock is None:
+        logger.error("run %s は別のプロセスが実行中。終わるのを待つか、そのプロセスを止めてから実行する", run_name)
+        return 2
+    stack.callback(lock.close)
     if previous is None:
         state.save_meta({**meta, "started_at": datetime.now().isoformat(timespec="seconds")})
     elif any(previous.get(k) != v for k, v in meta.items()):
@@ -288,7 +272,15 @@ def main(argv: list[str] | None = None) -> int:
                       ("--min-buyback", args.min_buyback), ("--max-buyback", args.max_buyback),
                       ("--limit", args.limit)) if value is not None)
                   + (f" --min-profit {args.min_profit}" if args.min_profit != 1 else "")
+                  + (f" --page-scope {args.page_scope}" if args.page_scope != SCOPE_REACHABLE else "")
+                  + (f" --reach-slack {args.reach_slack}" if args.reach_slack != DEFAULT_REACH_SLACK else "")
                   + (" --no-db" if args.no_db else ""))
+
+    # 進捗の書き戻し (--request-id) と、打ち切りの判定 (--deadline・中止の依頼)。どちらも無ければ何もしない
+    reporter = build_reporter(run_name, args.request_id, args.deadline, args.page_scope, clock)
+    reporter.set_stage(reporter.state["stage"])   # 開始を知らせる
+    save_only = args.stage == "save"   # 新しい検索・確認をせず、確認済みの分だけ保存する (打ち切り後も同じ扱い)
+    stop_reason: str | None = None
 
     # 買取価格は開始時点のものを保存し、再開しても同じ価格で判定を続ける
     saved = state.load_buyback()
@@ -305,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     target_jans = {b.jan_code for b in targets}
     candidate_count = sum(len(r["candidates"]) for jan, r in done.items() if jan in target_jans)
     pending = [b for b in targets if b.jan_code not in done]
-    if args.stage == "save":
+    if save_only:
         # 確認済みの分だけを保存する: 未検索の JAN は対象から外し、新しい検索はしない
         if pending:
             logger.warning("未検索の JAN %d 件は対象から外して保存する", len(pending))
@@ -315,12 +307,18 @@ def main(argv: list[str] | None = None) -> int:
                 len(pending), run_name)
 
     failed: list[str] = []
+    api_started, jan_processed = clock(), 0
     if pending:
         price_rate = max_price_rate(cfg, stores)
         finished = len(targets) - len(pending)
         consecutive_failures = 0
+        reporter.set_stage(STAGE_API, jan_total=len(targets), jan_done=finished, candidates=candidate_count)
         try:
             for b in pending:
+                # 各件の前に、終了時刻の上限と中止の依頼を見る
+                stop_reason = reporter.check(jan_done=finished, candidates=candidate_count)
+                if stop_reason:
+                    break
                 try:
                     record = search_one_jan(client, b, cfg, stores, args.coupon_margin, price_rate)
                 except JanSearchError as e:
@@ -333,12 +331,14 @@ def main(argv: list[str] | None = None) -> int:
                         state.append_api_record({"jan_code": b.jan_code, "hits_total": 0, "hits_seen": 0,
                                                  "candidates": [], "error": str(e)})
                         finished += 1
+                        jan_processed += 1
                     else:
                         failed.append(b.jan_code)   # 済みにせず、次回の再開でやり直す
                     continue
                 consecutive_failures = 0
                 state.append_api_record(record)
                 finished += 1
+                jan_processed += 1
                 candidate_count += len(record["candidates"])
                 if finished % PROGRESS_EVERY == 0 or finished == len(targets):
                     logger.info("API %d/%d JAN 完了, 候補 %d 件 (API %d 回)",
@@ -352,31 +352,50 @@ def main(argv: list[str] | None = None) -> int:
             logger.warning("再開: %s", resume_cmd)
             return 130
 
-    if failed:
+    api_seconds = (clock() - api_started).total_seconds()
+    done = {r["jan_code"]: r for r in state.load_api_records()}
+    if stop_reason:
+        # API 段階の途中で打ち切り: 検索済みの JAN だけを対象に保存まで進む (確定判定は行わない)
+        searched = [b for b in targets if b.jan_code in done]
+        logger.warning("%s (API %d/%d JAN 完了)。検索済みの JAN だけを対象に、確認済みの分を保存する。続き: %s",
+                       STOP_NOTES[stop_reason], len(searched), len(targets), resume_cmd)
+        targets, save_only = searched, True
+    elif failed:
         logger.warning("失敗した JAN %d 件 (未処理のまま): %s", len(failed), ", ".join(failed[:20]))
         logger.warning("やり直す: %s", resume_cmd)
         return 1
     logger.info("絞り込み完了: JAN %d 件, 候補 %d 件 → %s", len(targets), candidate_count, state.api_path)
     if args.stage == "api":
-        return 0
+        reporter.finish(STOP_NOTES.get(stop_reason), jan_done=len(targets), candidates=candidate_count)
+        return EXIT_CANCELLED if stop_reason == STOP_CANCELLED else 0
 
-    # ---- 確定判定: 候補の商品ページを、甘い見積もりで利益が大きい順に確認する ----
-    done = {r["jan_code"]: r for r in state.load_api_records()}
+    # ---- 確定判定: 届きそうな候補の商品ページを、届きやすい順に確認する (arbitrage/scope.py) ----
     candidates = [c for b in targets for c in done[b.jan_code]["candidates"]]
-    candidates.sort(key=lambda c: c["optimistic_effective_price"] - c["buyback_price"])
+    plan = plan_page_checks(candidates, stores.stores, cfg, args.page_scope, args.reach_slack, args.min_profit)
+    wanted = {(c["store_id"], c["item_code"]) for c in candidates}
     checked = {(r["store_id"], r["item_code"]): r for r in state.load_page_records()}
-    pending_pages = [c for c in candidates if (c["store_id"], c["item_code"]) not in checked]
-    logger.info("候補 %d 件 (確認済み %d, 残り %d)", len(candidates), len(candidates) - len(pending_pages),
-                len(pending_pages))
-    unchecked = 0
-    if args.stage == "save":
-        unchecked, pending_pages = len(pending_pages), []
+    pending_pages = [c for c in plan.ordered if (c["store_id"], c["item_code"]) not in checked]
+    finished = len(plan.ordered) - len(pending_pages)
+    logger.info("候補 %d 件のうち届きそう %d 件 / 確認の対象 %d 件 (確認済み %d, 残り %d)", len(candidates),
+                plan.reachable, len(plan.ordered), finished, len(pending_pages))
+    if plan.out_of_scope:
+        logger.info("届きそうにない候補 %d 件は確認しない (全候補を確認するなら --page-scope all)",
+                    plan.out_of_scope)
+    if save_only:
+        pending_pages = []
 
     pages = PageClient()
-    finished = len(candidates) - len(pending_pages)
     page_errors = 0
+    result_count = count_results((r for key, r in checked.items() if key in wanted), args.min_profit)
+    pages_started, pages_processed = clock(), 0
+    if pending_pages:
+        reporter.set_stage(STAGE_PAGES, jan_done=len(targets), candidates=len(candidates),
+                           pages_total=len(plan.ordered), pages_done=finished, results=result_count)
     try:
         for c in pending_pages:
+            stop_reason = reporter.check(pages_done=finished, results=result_count)
+            if stop_reason:
+                break
             try:
                 record = check_candidate(pages, c, cfg, stores)
             except PageFormatError as e:
@@ -392,20 +411,29 @@ def main(argv: list[str] | None = None) -> int:
             state.append_page_record(record)
             checked[(c["store_id"], c["item_code"])] = record
             finished += 1
-            if finished % PROGRESS_EVERY == 0 or finished == len(candidates):
+            pages_processed += 1
+            result_count += count_results([record], args.min_profit)
+            if finished % PROGRESS_EVERY == 0 or finished == len(plan.ordered):
                 profitable = sum(1 for r in checked.values() if r["status"] == "result")
                 logger.info("商品ページ %d/%d 件 完了, 黒字 %d 件 (アクセス %d 回)",
-                            finished, len(candidates), profitable, pages.request_count)
+                            finished, len(plan.ordered), profitable, pages.request_count)
     except Blocked as e:
         logger.error("中断: %s。時間を置いてから再開する", e)
         logger.error("再開: %s", resume_cmd)
         return 1
     except KeyboardInterrupt:
-        logger.warning("中断 (商品ページ %d/%d 件 完了)", finished, len(candidates))
+        logger.warning("中断 (商品ページ %d/%d 件 完了)", finished, len(plan.ordered))
         logger.warning("再開: %s", resume_cmd)
         return 130
 
-    wanted = {(c["store_id"], c["item_code"]) for c in candidates}
+    pages_seconds = (clock() - pages_started).total_seconds()
+    # 確認の対象のうち、まだ確認できていない候補 (範囲外にした候補は数えない)
+    unchecked = sum(1 for c in plan.ordered if (c["store_id"], c["item_code"]) not in checked)
+    if stop_reason and not save_only:
+        logger.warning("%s (商品ページ %d/%d 件 完了)", STOP_NOTES[stop_reason], finished, len(plan.ordered))
+        save_only = True
+    reporter.set_stage(STAGE_SAVING, pages_total=len(plan.ordered), pages_done=finished, results=result_count,
+                       jan_done=len(targets), candidates=len(candidates))
     records = [r for key, r in checked.items() if key in wanted]
     statuses: dict[str, int] = {}
     for r in records:
@@ -415,11 +443,11 @@ def main(argv: list[str] | None = None) -> int:
                   key=lambda r: -r["profit_rate"])
     logger.info("確定判定完了: 結果 %d 件 (利益 %+d 円以上) / 候補 %d 件 (内訳 %s)", len(rows), args.min_profit,
                 len(candidates), statuses)
-    if args.stage == "save":
+    if save_only:
         if unchecked:
             logger.warning("未確認の候補 %d 件を残したまま、確認済みの分を保存する。続き: %s", unchecked, resume_cmd)
-    elif len(records) < len(candidates):
-        logger.warning("未確認の候補が %d 件残っている。やり直す: %s", len(candidates) - len(records), resume_cmd)
+    elif unchecked:
+        logger.warning("未確認の候補が %d 件残っている。やり直す: %s", unchecked, resume_cmd)
         return 1
     for r in rows[:10]:
         logger.info("  %+.1f%% %+d円 %s [%s] 実質%d → %s %d", r["profit_rate"] * 100, r["profit"],
@@ -430,9 +458,17 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("見つけたクーポン %d 種類 (うちログイン不要 %d) → %s", len(coupon_rows),
                 sum(1 for c in coupon_rows if c["ログイン"] == "不要"), state.dir / "coupons.csv")
 
+    # 今回の実行の実測。待ち受けが所要時間予測の速度 (arbitrage_worker_state.rates) を更新するのに使う
+    state.save_meta({**state.load_meta(), "stats": {
+        "request_id": args.request_id, "jan_total": len(targets), "candidates": len(candidates),
+        "reachable": plan.reachable, "jan_processed": jan_processed, "api_seconds": round(api_seconds, 1),
+        "pages_processed": pages_processed, "pages_seconds": round(pages_seconds, 1)}})
+    exit_code = EXIT_CANCELLED if stop_reason == STOP_CANCELLED else 0
+
     if args.no_db:
         logger.info("DB 保存なし (--no-db)。結果は %s", state.pages_path)
-        return 0
+        reporter.finish(STOP_NOTES.get(stop_reason), results=len(rows))
+        return exit_code
     try:
         client_db = db.get_client()
     except db.DbConfigError as e:
@@ -446,7 +482,8 @@ def main(argv: list[str] | None = None) -> int:
     saved_count = db.upsert_results(client_db, run_id, rows)
     db.finish_run(client_db, run_id, len(candidates), saved_count)
     logger.info("DB 保存: run_id=%d, %d 件", run_id, saved_count)
-    return 0
+    reporter.finish(STOP_NOTES.get(stop_reason), results=saved_count)
+    return exit_code
 
 
 if __name__ == "__main__":

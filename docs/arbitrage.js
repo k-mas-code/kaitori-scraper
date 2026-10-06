@@ -1,5 +1,6 @@
 // 利益商品リスト - ログインしたオーナーだけが結果を読める (RLS)
 import { createSettings } from './arbitrage-settings.js';
+import { createResearch } from './arbitrage-research.js';
 
 const SOURCE_LABELS = { kaitorishouten: '買取商店', rudeya: '買取ルデヤ', kaitoriwiki: '買取wiki' };
 const PAGE_SIZE = 1000;   // PostgREST の 1 リクエストあたりの上限
@@ -29,10 +30,25 @@ const $store = $('store-select');
 const $status = $('status');
 const $tbody = $('result-tbody');
 const $tabs = $('tabs');
-const $tabButtons = { results: $('tab-results'), settings: $('tab-settings') };
+const $tabButtons = { results: $('tab-results'), research: $('tab-research'), settings: $('tab-settings') };
+const $research = $('research');
 const $settings = $('settings');
 
 const settings = createSettings({ supabase, $root: $settings });
+const research = createResearch({
+  supabase,
+  $root: $research,
+  onEditSettings: () => switchTab('settings'),
+  // 完了した実行の結果へ: 実行一覧を読み直して、その実行を選ぶ
+  onShowResults: (runId) => { runsStale = false; switchTab('results'); loadRuns(runId); },
+  // リサーチ画面が設定の購入予定日を書き換えた → 設定画面は次に開いたとき読み直す
+  onSettingsChanged: () => settings.discard(),
+  // リサーチ画面の表示中に依頼が終わった → 次に結果タブを開いたとき実行一覧を読み直す
+  onRunFinished: () => { runsStale = true; },
+});
+// 実行一覧を読み直す必要があるか。リサーチ画面を開いたら立てる
+// (離れている間はポーリングが止まるので、その間に終わった依頼は onRunFinished では分からない)
+let runsStale = false;
 let currentTab = 'results';
 
 let results = [];          // 選択中の実行の全結果 (利益率の高い順)
@@ -81,6 +97,7 @@ function render(session) {
   $tabs.classList.toggle('hidden', !loggedIn);
   if (!loggedIn) {
     settings.discard();
+    research.discard();
     currentTab = 'results';
   }
   showTab(loggedIn);
@@ -96,9 +113,10 @@ function render(session) {
   }
 }
 
-// ---------- タブ (結果 / 設定) ----------
+// ---------- タブ (利益商品リスト / リサーチ / 設定) ----------
 function showTab(loggedIn = true) {
   $app.classList.toggle('hidden', !loggedIn || currentTab !== 'results');
+  $research.classList.toggle('hidden', !loggedIn || currentTab !== 'research');
   $settings.classList.toggle('hidden', !loggedIn || currentTab !== 'settings');
   for (const [name, $btn] of Object.entries($tabButtons)) {
     const selected = name === currentTab;
@@ -107,6 +125,9 @@ function showTab(loggedIn = true) {
       ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 shadow-sm hover:bg-slate-100'}`;
   }
   if (loggedIn && currentTab === 'settings') settings.open();
+  // リサーチ画面は表示中だけ状態を読み直す (タブを離れたら止める)
+  if (loggedIn && currentTab === 'research') research.open();
+  else research.close();
 }
 
 // 未保存の変更があれば確認する。捨ててよければ true
@@ -117,17 +138,26 @@ function confirmDiscard() {
   return true;
 }
 
+// タブを切り替える。設定に未保存の変更があって移動をやめたら false
+function switchTab(name) {
+  if (name === currentTab) return true;
+  if (currentTab === 'settings' && !confirmDiscard()) return false;
+  if (name === 'research') runsStale = true;
+  currentTab = name;
+  showTab();
+  // 新しい実行が増えているかもしれないとき (リサーチ画面を開いた後) だけ読み直す。選択中の実行は保つ
+  if (name === 'results' && runsStale) loadRuns(Number($runSelect.value) || null);
+  return true;
+}
+
 for (const [name, $btn] of Object.entries($tabButtons)) {
-  $btn.addEventListener('click', () => {
-    if (name === currentTab) return;
-    if (currentTab === 'settings' && !confirmDiscard()) return;
-    currentTab = name;
-    showTab();
-  });
+  $btn.addEventListener('click', () => switchTab(name));
 }
 
 // ---------- 実行一覧 ----------
-async function loadRuns() {
+// selectRunId: 選択した状態にする実行 (一覧に無ければ最新を選ぶ)
+async function loadRuns(selectRunId = null) {
+  runsStale = false;
   $status.textContent = '読み込み中…';
   const { data, error } = await supabase
     .from('arbitrage_runs')
@@ -151,7 +181,9 @@ async function loadRuns() {
     opt.textContent = `${formatDateTime(run.started_at)}（${run.result_count ?? 0}件）`;
     return opt;
   }));
-  loadResults(data[0].id);
+  const selected = data.find((run) => run.id === selectRunId) ?? data[0];
+  $runSelect.value = String(selected.id);
+  loadResults(selected.id);
 }
 
 $runSelect.addEventListener('change', () => loadResults(Number($runSelect.value)));

@@ -127,3 +127,16 @@ def select_candidates(hits: list[dict], buyback: Buyback, cfg: CampaignConfig,
             "optimistic_effective_price": round(optimistic),
         })
     return candidates
+
+
+def realistic_gap(candidate: dict, store: Store, cfg: CampaignConfig) -> float:
+    """クーポン余地なしの現実的な見積もりでの利益額 (円) = 買取価格 − 実質価格の見積もり。
+
+    絞り込みと同じ甘い式だが、ページの公開クーポンは見込まない (値引きは使える手持ちクーポンの最大額だけ)。
+    上乗せ率は店の最大値のまま。確定判定で「届きそうな候補」を選び、届きやすい順に並べるのに使う。
+    """
+    price = candidate["sale_price"]
+    realistic = optimistic_effective_price(
+        price, optimistic_components(store, cfg), 0,
+        best_manual_discount(cfg.coupons, store.store_id, price))
+    return candidate["buyback_price"] - realistic
