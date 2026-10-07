@@ -42,10 +42,14 @@ def skip_reason(candidate: dict, page: ItemPage | None) -> str | None:
 
 
 def final_components(store: Store, cfg: CampaignConfig, page: ItemPage) -> list[PointComponent]:
-    """その商品に実際に付く枠: 共通分 + 対象のキャンペーン + ストアポイント (1% + 上乗せ) + ボーナスストアPlus"""
+    """その商品に実際に付く枠: 共通分 + 対象のキャンペーン + ストアポイント (1% + 上乗せ) + ボーナスストアPlus。
+
+    上乗せはページの率と設定の store_upsell (ログイン時だけ表示される分を手で登録したもの) の大きい方。
+    """
     components = list(cfg.common)
     components += [c.component for c in cfg.campaigns if campaign_applies(c, store, list(page.point_titles))]
-    components.append(PointComponent(name=STORE_POINT_NAME, rate=STORE_POINT_BASE + page.upsell_rate))
+    upsell = max(page.upsell_rate, cfg.upsell_rate(store.store_id))
+    components.append(PointComponent(name=STORE_POINT_NAME, rate=STORE_POINT_BASE + upsell))
     bsplus = bsplus_component(store, cfg)
     if bsplus:
         components.append(bsplus)

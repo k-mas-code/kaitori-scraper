@@ -16,10 +16,11 @@ const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
 const POINT_KEYS = ['name', 'rate', 'base', 'cap_per_order', 'cap_per_period', 'min_purchase', 'max_purchase'];
 const KNOWN_KEYS = {
-  top: ['version', 'purchase_date', 'common', 'campaigns', 'coupons', 'bsplus'],
+  top: ['version', 'purchase_date', 'common', 'campaigns', 'coupons', 'store_upsell', 'bsplus'],
   common: POINT_KEYS,
   campaigns: [...POINT_KEYS, 'entry_required', 'target', 'page_title', 'store_ids', 'dates'],
   coupons: ['name', 'type', 'value', 'max_discount', 'min_purchase', 'target', 'store_ids', 'valid_from', 'valid_until'],
+  store_upsell: ['store_id', 'rate', 'note', 'valid_from', 'valid_until'],
   bsplus: ['cap_per_order', 'cap_per_period'],
 };
 
@@ -91,6 +92,16 @@ export function isCouponActive(validFrom, validUntil, purchaseDate) {
   return true;
 }
 
+/** 店ごとの上乗せ率 (store_upsell) が購入予定日に有効か。期間の規則は手持ちクーポンと同じ */
+export const isStoreUpsellActive = isCouponActive;
+
+/** 2 つの有効期間 (null = 制限なし) が 1 日でも重なるか */
+export function periodsOverlap(a, b) {
+  const start = (p) => p.valid_from || '0000-00-00';
+  const end = (p) => p.valid_until || '9999-99-99';
+  return start(a) <= end(b) && start(b) <= end(a);
+}
+
 /** 入れ子のオブジェクト/配列の 1 か所だけ差し替えた新しい値を返す (元は変更しない) */
 export function setIn(obj, keys, value) {
   if (keys.length === 0) return value;
@@ -101,7 +112,7 @@ export function setIn(obj, keys, value) {
 
 export function emptyConfig(today) {
   return {
-    version: 1, purchase_date: today, common: [], campaigns: [], coupons: [],
+    version: 1, purchase_date: today, common: [], campaigns: [], coupons: [], store_upsell: [],
     bsplus: { cap_per_order: null, cap_per_period: null },
   };
 }
@@ -115,7 +126,7 @@ export function findUnknownKeys(config) {
     .flatMap((row, i) => unknown(row, KNOWN_KEYS[name], `${name}[${i}].`));
   return [
     ...unknown(config, KNOWN_KEYS.top, ''), ...rows('common'), ...rows('campaigns'), ...rows('coupons'),
-    ...unknown(config.bsplus, KNOWN_KEYS.bsplus, 'bsplus.'),
+    ...rows('store_upsell'), ...unknown(config.bsplus, KNOWN_KEYS.bsplus, 'bsplus.'),
   ];
 }
 
@@ -150,6 +161,10 @@ export function newCouponRow() {
   };
 }
 
+export function newStoreUpsellRow() {
+  return { store_id: '', rate: '', note: '', valid_from: '', valid_until: '' };
+}
+
 /** 設定 JSON → 下書き。壊れた値は空欄にして、保存時の検証で気付けるようにする */
 export function configToDraft(config, today) {
   const c = isObject(config) ? config : {};
@@ -175,6 +190,10 @@ export function configToDraft(config, today) {
       min_purchase: str(row.min_purchase),
       target: row.target === 'stores' ? 'stores' : 'all',
       store_ids: storeIdsDraft(row.store_ids),
+      valid_from: str(row.valid_from), valid_until: str(row.valid_until),
+    })),
+    store_upsell: objectRows(c.store_upsell).map((row) => ({
+      store_id: str(row.store_id), rate: rateToPercent(row.rate), note: str(row.note),
       valid_from: str(row.valid_from), valid_until: str(row.valid_until),
     })),
     bsplus: { cap_per_order: str(bsplus.cap_per_order), cap_per_period: str(bsplus.cap_per_period) },
@@ -215,6 +234,18 @@ export function draftToConfig(draft) {
     const ids = parseStoreIds(row.store_ids);
     if (ids.length === 0) fail(path, where, MSG.stores);
     return ids;
+  };
+  /** 有効期間 (開始・終了) → [from, until] (空欄は null) */
+  const period = (row, prefix, where) => {
+    const dates = ['valid_from', 'valid_until'].map((key) => {
+      const text = str(row[key]).trim();
+      if (text && !isValidDate(text)) fail(`${prefix}.${key}`, where, MSG.date);
+      return text || null;
+    });
+    if (dates.every((d) => d && isValidDate(d)) && dates[0] > dates[1]) {
+      fail(`${prefix}.valid_until`, where, '終了日は開始日以降にしてください');
+    }
+    return dates;
   };
 
   const pointNames = new Set();
@@ -274,27 +305,45 @@ export function draftToConfig(draft) {
     const maxDiscount = percent ? optInt(row.max_discount, `${prefix}.max_discount`, where) : null;
     if (maxDiscount === 0) fail(`${prefix}.max_discount`, where, '1 以上の整数で入力するか、空欄 (上限なし) にしてください');
     if (!has(COUPON_TARGETS, row.target)) fail(`${prefix}.target`, where, '対象を選んでください');
-    const period = ['valid_from', 'valid_until'].map((key) => {
-      const text = str(row[key]).trim();
-      if (text && !isValidDate(text)) fail(`${prefix}.${key}`, where, MSG.date);
-      return text || null;
-    });
-    if (period.every((d) => d && isValidDate(d)) && period[0] > period[1]) {
-      fail(`${prefix}.valid_until`, where, '終了日は開始日以降にしてください');
-    }
+    const [validFrom, validUntil] = period(row, prefix, where);
     return {
       name, type: row.type, value, max_discount: maxDiscount,
       min_purchase: optInt(row.min_purchase, `${prefix}.min_purchase`, where) ?? 0,
       target: row.target, store_ids: storeIds(row, `${prefix}.store_ids`, where),
-      valid_from: period[0], valid_until: period[1],
+      valid_from: validFrom, valid_until: validUntil,
     };
+  });
+
+  const storeUpsell = draft.store_upsell.map((row, i) => {
+    const prefix = `store_upsell.${i}`;
+    const where = `店ごとのポイント上乗せ ${i + 1} 行目`;
+    const storeId = str(row.store_id).normalize('NFKC').trim();
+    if (!storeId) fail(`${prefix}.store_id`, where, '店IDを入力してください');
+    const [validFrom, validUntil] = period(row, prefix, where);
+    const note = str(row.note).trim();
+    return {
+      store_id: storeId, rate: rate(row.rate, `${prefix}.rate`, where),
+      note: note || null, valid_from: validFrom, valid_until: validUntil,
+    };
+  });
+  // 同じ店で有効期間が重なる行は、どちらを使うか決まらないので弾く (Python 側と同じ規則)
+  storeUpsell.forEach((row, i) => {
+    if (!row.store_id) return;
+    const dup = storeUpsell.findIndex((other, j) => j < i && other.store_id === row.store_id && periodsOverlap(other, row));
+    if (dup !== -1) {
+      fail(`store_upsell.${i}.store_id`, `店ごとのポイント上乗せ ${i + 1} 行目`,
+        `店ID「${row.store_id}」の有効期間が ${dup + 1} 行目と重なっています`);
+    }
   });
 
   const bsplus = {
     cap_per_order: optInt(draft.bsplus.cap_per_order, 'bsplus.cap_per_order', 'ボーナスストアPlus の上限'),
     cap_per_period: optInt(draft.bsplus.cap_per_period, 'bsplus.cap_per_period', 'ボーナスストアPlus の上限'),
   };
-  return { config: { version: 1, purchase_date: draft.purchase_date, common, campaigns, coupons, bsplus }, errors };
+  return {
+    config: { version: 1, purchase_date: draft.purchase_date, common, campaigns, coupons, store_upsell: storeUpsell, bsplus },
+    errors,
+  };
 }
 
 // ---------- 画面 ----------
@@ -304,6 +353,7 @@ const HELP = {
   common: 'いつ買っても付くポイント (LYPプレミアム、PayPay 支払いなど) を入れます。ストアポイント (基本 1% + 上乗せ) とボーナスストアPlus の率は自動で読むので、ここには入れません。',
   campaigns: '特定の日だけ付くポイントを、対象日つきで入れます。購入予定日が対象日に含まれるものだけ計算に使われます。全体加算日の「ボーナスストアPlus はさらに +2%」「ボーナスストアPlus かつ優良ストアはさらに +3%」は上限が別なので、2 行に分けて登録します (優良ストアには両方付きます)。',
   coupons: 'ログインしないと見えないクーポンやモールクーポンを手で登録します。商品ページで見つかる公開クーポンは自動で読みます。クーポンは 1 注文 1 枚で併用できないため、利益がいちばん大きくなる 1 枚 (または使わない) が選ばれます。',
+  store_upsell: 'ログインしないと表示されない上乗せを手で登録します。ページの率と設定の率の大きい方で計算します。率はログイン時に「ストアポイント」の行に出る上乗せ率そのもの (15% と出るなら基本 1% を除いた 14) を入れます。',
   bsplus: 'ボーナスストアPlus (+4% / +9%) の率は、店舗リストの購入予定日の枠から自動で読みます。ここには付与上限だけを入れます (空欄 = 上限なし)。',
 };
 
@@ -513,6 +563,20 @@ export function createSettings({ supabase, $root }) {
     return rowCard('coupons', i, `クーポン ${i + 1}`, badge, fields);
   }
 
+  function storeUpsellRow(row, i) {
+    const prefix = `store_upsell.${i}`;
+    const dateAttrs = { type: 'date', dataset: { rerender: '1' } };
+    const fields = [
+      field('店ID', `${prefix}.store_id`, { placeholder: '例: denkichiweb' }),
+      field('上乗せ率 (%)', `${prefix}.rate`, { inputmode: 'decimal', placeholder: '例: 14' }),
+      field('メモ', `${prefix}.note`, { placeholder: '例: ログイン時のみ表示' }, 'lg:col-span-2'),
+      field('有効期間 開始 (空欄 = 制限なし)', `${prefix}.valid_from`, dateAttrs),
+      field('有効期間 終了 (空欄 = 制限なし)', `${prefix}.valid_until`, dateAttrs),
+    ];
+    const badge = isStoreUpsellActive(row.valid_from, row.valid_until, state.draft.purchase_date) && activeBadge();
+    return rowCard('store_upsell', i, `上乗せ ${i + 1}`, badge, fields);
+  }
+
   function renderForm() {
     const active = document.activeElement;
     const focusKey = $body.contains(active) ? (active.dataset.path || active.dataset.key) : null;
@@ -525,6 +589,7 @@ export function createSettings({ supabase, $root }) {
         addButton('common', '＋ ポイントを追加')),
       card('キャンペーン', HELP.campaigns, d.campaigns.map(campaignRow), addButton('campaigns', '＋ キャンペーンを追加')),
       card('手持ちクーポン', HELP.coupons, d.coupons.map(couponRow), addButton('coupons', '＋ クーポンを追加')),
+      card('店ごとのポイント上乗せ', HELP.store_upsell, d.store_upsell.map(storeUpsellRow), addButton('store_upsell', '＋ 店を追加')),
       card('ボーナスストアPlus の上限', HELP.bsplus,
         h('div', { class: 'grid gap-3 sm:grid-cols-2 mt-3 max-w-md' },
           intField('上限 1注文 (pt)', 'bsplus.cap_per_order', 'なし'),
@@ -573,7 +638,11 @@ export function createSettings({ supabase, $root }) {
     if (e.target.dataset?.rerender && state.loaded) renderForm();
   });
 
-  const NEW_ROW = { common: newCommonRow, campaigns: () => newCampaignRow(state.draft.purchase_date), coupons: newCouponRow };
+  const NEW_ROW = {
+    common: newCommonRow, campaigns: () => newCampaignRow(state.draft.purchase_date),
+    coupons: newCouponRow, store_upsell: newStoreUpsellRow,
+  };
+  const FIRST_FIELD = { store_upsell: 'store_id' };   // 追加後にフォーカスする欄 (既定は name)
 
   $body.addEventListener('click', (e) => {
     const $btn = e.target.closest('button[data-action]');
@@ -594,7 +663,7 @@ export function createSettings({ supabase, $root }) {
       setDraft(setIn(d, ['campaigns', index, 'month'], shiftMonth(d.campaigns[index].month, Number($btn.dataset.delta))));
     }
     renderForm();
-    if (action === 'add') focusField(`${list}.${state.draft[list].length - 1}.name`);
+    if (action === 'add') focusField(`${list}.${state.draft[list].length - 1}.${FIRST_FIELD[list] || 'name'}`);
   });
 
   $summary.addEventListener('click', (e) => {

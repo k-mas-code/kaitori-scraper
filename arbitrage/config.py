@@ -34,13 +34,14 @@ COUPON_FIXED = "fixed"      # 定額
 COUPON_PERCENT = "percent"  # 定率
 COUPON_TYPES = (COUPON_FIXED, COUPON_PERCENT)
 
-TOP_KEYS = {"version", "purchase_date", "common", "campaigns", "coupons", "bsplus"}
+TOP_KEYS = {"version", "purchase_date", "common", "campaigns", "coupons", "bsplus", "store_upsell"}
 COMPONENT_KEYS = {"name", "rate", "base", "cap_per_order", "cap_per_period", "min_purchase",
                   "max_purchase"}
 CAMPAIGN_KEYS = COMPONENT_KEYS | {"entry_required", "target", "page_title", "store_ids", "dates"}
 COUPON_KEYS = {"name", "type", "value", "max_discount", "min_purchase", "target", "store_ids",
                "valid_from", "valid_until"}
 BSPLUS_KEYS = {"cap_per_order", "cap_per_period"}
+STORE_UPSELL_KEYS = {"store_id", "rate", "note", "valid_from", "valid_until"}
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -80,6 +81,17 @@ class BsPlusConfig:
 
 
 @dataclass(frozen=True)
+class StoreUpsell:
+    """店ごとのストアポイント上乗せ率 (ログインしないと商品ページに出ない分を手で登録したもの)"""
+
+    store_id: str
+    rate: Decimal                        # ログイン時に表示される上乗せ率そのもの (14% なら 0.14)
+    note: str | None = None
+    valid_from: date | None = None       # 有効期間 (両端を含む)
+    valid_until: date | None = None
+
+
+@dataclass(frozen=True)
 class Settings:
     """設定の全体 (日付で絞る前)"""
 
@@ -88,6 +100,7 @@ class Settings:
     campaigns: tuple[Campaign, ...]
     coupons: tuple[ManualCoupon, ...]
     bsplus: BsPlusConfig
+    store_upsell: tuple[StoreUpsell, ...] = ()
     raw: dict = field(compare=False, default_factory=dict)   # 設定 JSON そのまま (日付は文字列)
 
 
@@ -99,7 +112,15 @@ class CampaignConfig:
     campaigns: tuple[Campaign, ...]
     bsplus: BsPlusConfig
     coupons: tuple[ManualCoupon, ...] = ()
+    store_upsell: tuple[StoreUpsell, ...] = ()               # 実行日に有効なものだけ (店ID は重複しない)
     raw: dict = field(compare=False, default_factory=dict)   # 保存用 (実行日に有効な分だけの設定 JSON)
+
+    def upsell_rate(self, store_id: str) -> Decimal:
+        """設定に登録した上乗せ率 (無ければ 0)"""
+        for u in self.store_upsell:
+            if u.store_id == store_id:
+                return u.rate
+        return Decimal(0)
 
 
 # ---- 値の検証 ----
@@ -263,18 +284,54 @@ def _coupon(entry: object, where: str) -> ManualCoupon:
     where = _named(entry, where, COUPON_KEYS)
     value, max_discount = _coupon_value(entry, where)
     target, store_ids = _target(entry, COUPON_TARGETS, where)
-    valid_from, valid_until = _opt_date(entry, "valid_from", where), _opt_date(entry, "valid_until", where)
-    if valid_from and valid_until and valid_from > valid_until:
-        raise ConfigError(f"{where}: valid_from ({valid_from}) が valid_until ({valid_until}) より後")
+    valid_from, valid_until = _period(entry, where)
     return ManualCoupon(name=entry["name"], type=entry["type"], value=value, max_discount=max_discount,
                         min_purchase=_opt_int(entry, "min_purchase", where) or 0,
                         target=target, store_ids=store_ids, valid_from=valid_from, valid_until=valid_until)
+
+
+def _period(entry: dict, where: str) -> tuple[date | None, date | None]:
+    """valid_from / valid_until (両端を含む、null は制限なし)"""
+    valid_from, valid_until = _opt_date(entry, "valid_from", where), _opt_date(entry, "valid_until", where)
+    if valid_from and valid_until and valid_from > valid_until:
+        raise ConfigError(f"{where}: valid_from ({valid_from}) が valid_until ({valid_until}) より後")
+    return valid_from, valid_until
+
+
+def _store_upsell(entry: object, where: str) -> StoreUpsell:
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{where}: 項目はマッピング (キー: 値 の組) にする。値: {entry!r}")
+    store_id = entry.get("store_id")
+    if not isinstance(store_id, str) or not store_id.strip():
+        raise ConfigError(f"{where}: store_id (店ID、空でない文字列) が必要")
+    where = f"{where} ({store_id.strip()})"
+    _check_keys(entry, STORE_UPSELL_KEYS, where)
+    note = entry.get("note")
+    if note is not None and not isinstance(note, str):
+        raise ConfigError(f"{where}: note は文字列か null。値: {note!r}")
+    valid_from, valid_until = _period(entry, where)
+    return StoreUpsell(store_id=store_id.strip(), rate=_rate(entry, "rate", where), note=note or None,
+                       valid_from=valid_from, valid_until=valid_until)
 
 
 def _check_unique(names: list[str], where: str) -> None:
     duplicated = sorted({n for n in names if names.count(n) > 1})
     if duplicated:
         raise ConfigError(f"{where}: name が重複している: {duplicated}")
+
+
+def _periods_overlap(a: StoreUpsell, b: StoreUpsell) -> bool:
+    start = max(d for d in (a.valid_from, b.valid_from, date.min) if d is not None)
+    end = min(d for d in (a.valid_until, b.valid_until, date.max) if d is not None)
+    return start <= end
+
+
+def _check_upsell_unique(items: tuple[StoreUpsell, ...], where: str) -> None:
+    """同じ店に有効期間の重なる行が 2 つあると、どちらの率を使うか決められない"""
+    for i, a in enumerate(items):
+        for b in items[i + 1:]:
+            if a.store_id == b.store_id and _periods_overlap(a, b):
+                raise ConfigError(f"{where}: store_id が重複している (有効期間が重なる): {a.store_id}")
 
 
 def _jsonable(value: object) -> object:
@@ -306,13 +363,17 @@ def parse_settings(raw: dict) -> Settings:
     coupons = tuple(_coupon(e, f"coupons[{i}]") for i, e in enumerate(_list(raw, "coupons", "設定")))
     _check_unique([c.name for c in common] + [c.component.name for c in campaigns], "common / campaigns")
     _check_unique([c.name for c in coupons], "coupons")
+    store_upsell = tuple(_store_upsell(e, f"store_upsell[{i}]")
+                         for i, e in enumerate(_list(raw, "store_upsell", "設定")))
+    _check_upsell_unique(store_upsell, "store_upsell")
 
     bs_raw = raw.get("bsplus") or {}
     if not isinstance(bs_raw, dict):
         raise ConfigError("bsplus: マッピングにする")
     _check_keys(bs_raw, BSPLUS_KEYS, "bsplus")
     return Settings(purchase_date=purchase_date, common=common, campaigns=campaigns, coupons=coupons,
-                    bsplus=BsPlusConfig(cap=_cap(bs_raw, "bsplus")), raw=_jsonable(raw))
+                    bsplus=BsPlusConfig(cap=_cap(bs_raw, "bsplus")), store_upsell=store_upsell,
+                    raw=_jsonable(raw))
 
 
 def load_settings_file(path: Path) -> Settings:
@@ -332,7 +393,7 @@ def load_settings_file(path: Path) -> Settings:
 
 # ---- 実行日での絞り込み ----
 
-def coupon_valid_on(coupon: ManualCoupon, day: date) -> bool:
+def coupon_valid_on(coupon: ManualCoupon | StoreUpsell, day: date) -> bool:
     return ((coupon.valid_from is None or coupon.valid_from <= day)
             and (coupon.valid_until is None or day <= coupon.valid_until))
 
@@ -347,9 +408,15 @@ def active_coupons(settings: Settings, day: date) -> tuple[ManualCoupon, ...]:
     return tuple(c for c in settings.coupons if coupon_valid_on(c, day))
 
 
+def active_store_upsell(settings: Settings, day: date) -> tuple[StoreUpsell, ...]:
+    """その日が有効期間内の店ごとの上乗せ率 (検証済みなので同じ店は高々 1 件)"""
+    return tuple(u for u in settings.store_upsell if coupon_valid_on(u, day))
+
+
 def active_config(settings: Settings, day: date) -> CampaignConfig:
     """実行日に有効なものだけの設定。raw も同じ仕様の JSON に絞る (日付外の項目を変えても再開できるように)"""
     campaigns, coupons = active_campaigns(settings, day), active_coupons(settings, day)
+    store_upsell = active_store_upsell(settings, day)
     campaign_names = {c.component.name for c in campaigns}
     coupon_names = {c.name for c in coupons}
     raw = {
@@ -358,5 +425,13 @@ def active_config(settings: Settings, day: date) -> CampaignConfig:
         "campaigns": [e for e in settings.raw.get("campaigns") or [] if e["name"] in campaign_names],
         "coupons": [e for e in settings.raw.get("coupons") or [] if e["name"] in coupon_names],
     }
+    # 店ID は期間違いで複数行ありうるので、行ごとに有効期間で選ぶ (name のような一意キーが無い)
+    filtered = [e for e in settings.raw.get("store_upsell") or []
+                if coupon_valid_on(_store_upsell(e, "store_upsell"), day)]
+    # キーの有無ではなく中身で再開条件を決める: その日に有効な行が無ければ raw からキーごと省く
+    # (設定画面は常に store_upsell: [] を書くので、この機能より前に始めた run の meta.config と一致させる)
+    raw.pop("store_upsell", None)
+    if filtered:
+        raw["store_upsell"] = filtered
     return CampaignConfig(common=settings.common, campaigns=campaigns, bsplus=settings.bsplus,
-                          coupons=coupons, raw=raw)
+                          coupons=coupons, store_upsell=store_upsell, raw=raw)

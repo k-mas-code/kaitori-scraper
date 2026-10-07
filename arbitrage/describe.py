@@ -65,6 +65,14 @@ def print_config(settings: Settings, cfg: CampaignConfig, stores: StoreList, sou
         target = describe_stores(c.store_ids, stores) if c.target == "stores" else TARGET_LABELS["all"]
         print(f"  - {c.name}: {describe_coupon(c)}\n      対象: {target}")
     print(f"  期間外で無効: {len(settings.coupons) - len(cfg.coupons)} 件")
+    print(f"\n[store_upsell] {stores.run_date} に有効な店ごとのポイント上乗せ (ログイン時だけ表示される分。"
+          "ページの率と大きい方を使う)" + ("" if cfg.store_upsell else " (なし)"))
+    for u in cfg.store_upsell:
+        unknown = "" if u.store_id in stores.stores else "  ※店舗リストに無い店ID"
+        note = f" ({u.note})" if u.note else ""
+        print(f"  - {u.store_id}: 上乗せ {float(u.rate) * 100:g}%{note}、"
+              f"期間 {u.valid_from or '指定なし'} 〜 {u.valid_until or '指定なし'}{unknown}")
+    print(f"  期間外で無効: {len(settings.store_upsell) - len(cfg.store_upsell)} 件")
     slots = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
     cap = "上限なし" if cfg.bsplus.cap is None else f"上限 {cfg.bsplus.cap:,}pt"
     print(f"\n[bsplus] ボーナスストアPlus: {cap}。この日の枠あり {slots} 店 / 全 {len(stores.stores)} 店")

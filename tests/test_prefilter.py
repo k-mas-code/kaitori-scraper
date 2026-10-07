@@ -4,10 +4,10 @@ from decimal import Decimal
 import pytest
 
 from arbitrage.buyback import Buyback
-from arbitrage.config import BsPlusConfig, Campaign, CampaignConfig, ManualCoupon
+from arbitrage.config import BsPlusConfig, Campaign, CampaignConfig, ManualCoupon, StoreUpsell
 from arbitrage.points import PointComponent
 from arbitrage.points import TAX_INCLUDED, optimistic_effective_price
-from arbitrage.prefilter import (campaign_applies, max_price_rate, optimistic_components,
+from arbitrage.prefilter import (campaign_applies, max_price_rate, max_upsell, optimistic_components,
                                  price_can_never_pass, select_candidates, top_genre)
 from arbitrage.stores import Store, StoreList
 
@@ -100,6 +100,27 @@ def test_manual_coupon_widens_prefilter():
     # 値引きは「余地」と手持ちクーポンの大きい方 (足さない)
     assert optimistic_effective_price(10000, [], 0.2, 1500) == 8000
     assert optimistic_effective_price(10000, [], 0.1, 1500) == 8500
+
+
+def test_store_upsell_setting_raises_prefilter_upsell_to_the_larger_rate():
+    # 店舗リストの最大上乗せ 5% の店に設定で 14% → 絞り込みは 14% で見る。設定が小さければ店舗リストのまま
+    s1, s2, s3 = store("s1", upsell="0.05"), store("s2", upsell="0.20"), store("s3", upsell="0.05")
+    c = CampaignConfig((), (), BsPlusConfig(),
+                       store_upsell=(StoreUpsell("s1", D("0.14")), StoreUpsell("s2", D("0.14"))))
+    def store_point(st, conf):
+        return next(x.rate for x in optimistic_components(st, conf) if x.name == "ストアポイント")
+    assert max_upsell(s1, c) == D("0.14") and store_point(s1, c) == D("0.15")
+    assert max_upsell(s2, c) == D("0.20") and store_point(s2, c) == D("0.21")
+    assert max_upsell(s3, c) == D("0.05") and store_point(s3, c) == D("0.06")
+    assert store_point(s1, cfg()) == D("0.06")
+    # 打ち切り用の率にも設定の分が入る (s1 と s3 だけなら 5% → 14%)
+    assert max_price_rate(c, store_list(s1, s3)) == pytest.approx(0.15 / 1.1)
+    assert max_price_rate(cfg(), store_list(s1, s3)) == pytest.approx(0.06 / 1.1)
+    # 10,000 円 (買取 9,000): 上乗せ 5% では 10,000 − 9,091×6% = 9,455 で落ちるが、設定 14% なら 8,637 で通る
+    stores = store_list(s1)
+    assert select_candidates([hit(price=10000)], BUYBACK, cfg(), stores, 0.0) == []
+    got = select_candidates([hit(price=10000)], BUYBACK, c, stores, 0.0)
+    assert [(x["item_code"], x["optimistic_effective_price"]) for x in got] == [("s1_a", 8637)]
 
 
 CUTOFF_COUPON_SETS = [

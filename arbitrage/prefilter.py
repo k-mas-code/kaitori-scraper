@@ -44,11 +44,16 @@ def bsplus_component(store: Store, cfg: CampaignConfig) -> PointComponent | None
     return PointComponent(name=BSPLUS_NAME, rate=store.bsplus_rate, cap=cfg.bsplus.cap)
 
 
+def max_upsell(store: Store, cfg: CampaignConfig) -> Decimal:
+    """その店で付きうる上乗せ率の上限: 店舗リストの最大上乗せと、設定の store_upsell の大きい方"""
+    return max(store.max_upsell, cfg.upsell_rate(store.store_id))
+
+
 def optimistic_components(store: Store, cfg: CampaignConfig) -> list[PointComponent]:
     """その店で付きうる枠をすべて並べる (上乗せ率は店の最大値)"""
     components = list(cfg.common)
     components += [c.component for c in cfg.campaigns if campaign_applies(c, store, None)]
-    components.append(PointComponent(name=STORE_POINT_NAME, rate=STORE_POINT_BASE + store.max_upsell))
+    components.append(PointComponent(name=STORE_POINT_NAME, rate=STORE_POINT_BASE + max_upsell(store, cfg)))
     bsplus = bsplus_component(store, cfg)
     if bsplus:
         components.append(bsplus)
@@ -64,7 +69,7 @@ def max_price_rate(cfg: CampaignConfig, stores: StoreList) -> float:
         return float(c.rate) if c.base == TAX_INCLUDED else float(c.rate) / 1.1
 
     configured = sum(per_price(c) for c in cfg.common) + sum(per_price(c.component) for c in cfg.campaigns)
-    best_store = max((s.max_upsell + s.bsplus_rate for s in stores.stores.values()), default=Decimal(0))
+    best_store = max((max_upsell(s, cfg) + s.bsplus_rate for s in stores.stores.values()), default=Decimal(0))
     return configured + float(STORE_POINT_BASE + best_store) / 1.1
 
 
