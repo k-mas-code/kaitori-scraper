@@ -71,3 +71,42 @@ def finish_run(client: Client, run_id: int, candidate_count: int, result_count: 
         "candidate_count": candidate_count,
         "result_count": result_count,
     }).eq("id", run_id).execute()
+
+
+# ---- リサーチ依頼 (arbitrage_research_requests) と待ち受けの状態 (arbitrage_worker_state) ----
+# スキーマは db/arbitrage_research.sql
+
+REQUESTS = "arbitrage_research_requests"
+WORKER_STATE = "arbitrage_worker_state"
+
+
+def fetch_request(client: Client, request_id: int) -> dict | None:
+    data = client.table(REQUESTS).select("*").eq("id", request_id).limit(1).execute().data
+    return data[0] if data else None
+
+
+def fetch_requests_by_status(client: Client, status: str) -> list[dict]:
+    """その状態の依頼を古い順に返す"""
+    return client.table(REQUESTS).select("*").eq("status", status).order("id").execute().data or []
+
+
+def update_request(client: Client, request_id: int, fields: dict, only_status: str | None = None) -> dict | None:
+    """依頼行を更新し、更新後の行を返す (cancel_requested の確認に使う)。
+
+    only_status を付けると、その状態の行だけを更新する (他で先に進められていたら None)。
+    """
+    query = client.table(REQUESTS).update(fields).eq("id", request_id)
+    if only_status is not None:
+        query = query.eq("status", only_status)
+    data = query.execute().data
+    return data[0] if data else None
+
+
+def fetch_worker_state(client: Client) -> dict | None:
+    data = client.table(WORKER_STATE).select("*").limit(1).execute().data
+    return data[0] if data else None
+
+
+def upsert_worker_state(client: Client, fields: dict) -> None:
+    """待ち受けの状態 (常に 1 行) を作る / 渡した列だけ更新する"""
+    client.table(WORKER_STATE).upsert({**fields, "singleton": True}, on_conflict="singleton").execute()

@@ -20,8 +20,11 @@ GitHub Pages (docs/)
       └─ arbitrage.html / arbitrage.js  利益商品リスト (ログインしたオーナーだけが読める)
 
 ローカル実行のみ (WSL から月3〜4回。GitHub Actions には載せない)
-  └─ python -m arbitrage.run → Yahoo!ショッピング商品検索API + 商品ページ
-                             → Supabase (arbitrage_runs / arbitrage_results)
+  ├─ python -m arbitrage.run → Yahoo!ショッピング商品検索API + 商品ページ
+  │                          → Supabase (arbitrage_runs / arbitrage_results)
+  └─ python -m arbitrage.worker (待ち受け。起動したままにする)
+       結果ページの「リサーチ」タブ → Supabase (arbitrage_research_requests) の依頼を 10 秒ごとに確認
+       → arbitrage.run を子プロセスで実行 → 進捗を依頼行に書き戻す
 ```
 
 | 項目 | 値 |
@@ -82,6 +85,10 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 .venv/bin/python -m arbitrage.run --check-config                   # 設定の解釈を表示 (読み込み元・購入予定日・その日に有効なキャンペーン/クーポン)
 .venv/bin/python -m arbitrage.run --date 2026-10-18                # 設定の購入予定日ではなく、この日付で計算する
 .venv/bin/python -m arbitrage.run --config-file config/campaigns.yaml   # 設定を Supabase ではなくファイル (YAML/JSON) から読む
+.venv/bin/python -m arbitrage.run --page-scope all                 # 確定判定を全候補に広げる (既定 reachable = 届きそうな候補だけ)
+.venv/bin/python -m arbitrage.run --reach-slack 0.05               # 「届きそう」の余裕 (販売価格比。既定 0.03、0〜0.2)
+.venv/bin/python -m arbitrage.run --deadline 2026-10-05T23:00      # 終了時刻の上限。過ぎたら打ち切って確認済みの分を保存 (終了コード 0)
+.venv/bin/python -m arbitrage.worker                               # 待ち受け: 結果ページの「リサーチ実行」を受けて run を起動する (Ctrl+C で停止)
 .venv/bin/python -m pytest -q tests                                # 単体テスト
 ```
 
@@ -91,7 +98,11 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
   1. 買取価格 (`buyback.py`): `price_history` の直近7日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値
   2. 商品検索API v3 (`yahoo_api.py`): `jan_code` で新品・在庫ありを価格の安い順に取得。**実測の制限は時計の 1 分ごとに 30 回** (公式の記載は 1 秒 1 回) → 2.15 秒間隔。429 は次の分の変わり目まで待って再試行
   3. 絞り込み (`prefilter.py`): 店舗リストの店だけ残し、甘い実質価格 `販売価格 − max(販売価格 × クーポン余地, 使える手持ちクーポンの最大値引き額) − クーポン前の価格で付きうるポイント` が買取価格を下回るものを候補にする
-  4. 確定判定 (`yahoo_page.py` / `finalize.py`): 商品ページを取得し、実際の上乗せ率とクーポンで再計算。黒字だけを結果にする
+  4. 確定判定 (`scope.py` / `yahoo_page.py` / `finalize.py`): **届きそうな候補だけを、届きやすい順に**商品ページで確認し、実際の上乗せ率とクーポンで再計算。黒字だけを結果にする
+     - 背景 (2026-10-04 の実測): 絞り込みはクーポン余地 20% 込みの甘い判定で、以前はその利益額の順に全件確認していた。この順だとポイント上限で届かない高額品ばかり先に見てしまい、黒字に届く候補は全体の 2〜3 割しかなかった
+     - 見積もり `realistic_gap` (`prefilter.py`) = 買取価格 − クーポン余地なしの実質価格 (上乗せ率は店の最大値、値引きは使える手持ちクーポンの最大額だけ。ページの公開クーポンは見込まない)
+     - 届きそう = `realistic_gap + 販売価格 × reach_slack >= min(min_profit, 0)`。確認順は `realistic_gap / 販売価格` の大きい順。`--page-scope all` は届きそうな候補を先に、残りを同じ順で続ける
+     - 範囲外にした候補は「未確認」のエラーにしない (件数を INFO ログに出して正常終了)。`--page-scope` / `--reach-slack` / `--min-profit` / `--deadline` は再開条件 (meta) に含めないので、同じ run のまま範囲を広げて続きを確認できる
   5. 保存 (`db.py`): `arbitrage_runs` / `arbitrage_results` に service_role キーで upsert
 - 設定 (`config.py`): 結果ページの「設定」画面で編集 → Supabase `arbitrage_settings` (1 行、`config` jsonb。スキーマは `db/arbitrage_settings.sql`) → 実行時に service_role キーで読む。行が無いとエラーで止まる
   - 中身: `purchase_date` (購入予定日)、`common` (毎日付く分)、`campaigns` (日付指定。`dates` に実行日を含むものだけ有効)、`coupons` (手持ちクーポン。有効期間内のものだけ有効)、`bsplus` (上限のみ)。不明なキー・範囲外の値はエラーで止まる
@@ -113,6 +124,30 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 - 設定の補足: 金額帯で率が変わる企画は `min_purchase` / `max_purchase` で帯ごとに 1 行ずつ登録する。購入予定日が今日でない場合、公開クーポンは期限が購入予定日まで残っているものだけ使い、`target: page` は今日のページで判定される (警告が出る)。既定の run 名は `{実行した日}-buy{購入予定日}`
 - 設定テーブルは `db/arbitrage_settings.sql` (オーナーだけ読み書き可)。カレンダー (貴社内限定の資料) 由来の日程は公開リポジトリに入れず、Supabase の設定にだけ置く
 
+### リサーチタブと待ち受け (`worker.py` / `research.py` / `progress.py`)
+
+結果ページの「リサーチ」タブで条件を決めて「リサーチ実行」→ この PC の待ち受けが run を起動する。**待ち受けを起動していないと依頼は queued のまま**。
+
+- スキーマ: `db/arbitrage_research.sql` (`db/arbitrage.sql` の後に実行。再実行可)
+  - `arbitrage_research_requests`: 依頼 1 行 = 1 回の実行。`status` は queued → running → completed / failed / cancelled。**待ち・実行中の依頼は同時に 1 件だけ** (部分ユニークインデックス)。オーナーが書けるのは INSERT の `params` と UPDATE の `cancel_requested` だけ (列単位 GRANT)
+  - `arbitrage_worker_state` (1 行): `heartbeat_at` (10 秒ごと)、`buyback_histogram` (買取価格 1,000 円刻みの JAN 数。30 分ごと)、`rates` (実測の速度)
+- 依頼の `params` (ページと `research.parse_params` の両方で検証。不明なキー・範囲外は拒否): `purchase_date` (必須。`--date` に渡す)、`min_buyback` / `max_buyback`、`min_profit` (-5000〜100000)、`page_scope`、`reach_slack` (0〜0.2)、`deadline` (タイムゾーン付き ISO 日時)
+- 待ち受けの動き: いちばん古い queued を 1 件取り、`[python, -m, arbitrage.run, *build_run_args()]` を子プロセスで起動 (シェルを通さない。引数は検証済みの値から作り直す)。出力は `data/arbitrage/requests/{依頼ID}.log`
+  - 終了コード 0 → completed / 3 → cancelled (中止の依頼) / それ以外 → failed (`message` はログ末尾の ERROR 行。「再開:」の行は飛ばす)
+  - 毎周期、子プロセスを持っていないのに running の依頼を failed にする (PID ファイル `data/arbitrage/requests/{依頼ID}.pid` の run がまだ動いていれば SIGINT で止めてから)。ただし `arbitrage_worker_state.heartbeat_at` が 60 秒以内なら他の待ち受けが動いているとみなし、古くなるまで何もしない。同じ PC での二重起動は `data/arbitrage/worker.lock` (flock) で防ぐ
+  - 終了状態の書き込みは 3 回やり直し、だめなら `pending_finish` に残して周期ごとに再送する (run_id の外部キー違反なら run_id を外す)。終了状態の更新は `status='running'` の行だけ
+  - Ctrl+C (SIGTERM / SIGHUP も同じ) は子プロセスに SIGINT を送って待ち、依頼を failed にする → **同じ条件で実行し直すと続きから再開**
+  - 完了した run が JAN 200 件以上を処理していたら、その実測 (`meta.json` の `stats`) で `rates` を更新する
+- run 側 (`--request-id N`): 進捗 (`stage` = starting / api / pages / saving / done、件数、`eta`) を 20 秒以上の間隔で依頼行の `progress` に書き、同じタイミングで `cancel_requested` を読む。中止なら確認済みの分を保存して終了コード 3。進捗の書き込み失敗では止めない
+  - `--deadline` を過ぎたとき・中止のときは `--stage save` と同じ扱い (API 段階の途中なら検索済みの JAN だけを対象に保存。確定判定はしない)
+  - 同じ日に設定を変えて依頼し直すと、既定の run 名が別条件で使われている → 依頼からの実行に限り `{run名}-c{条件のハッシュ8桁}` にする (同じ条件なら同じ名前になり、中断後も続きから再開できる。手動実行は従来どおりエラー)
+  - run フォルダは `run.lock` (flock) で排他。別プロセスが同じ run を実行中なら終了コード 2
+- 所要時間の予測 (ページの JS と `research.estimate` で同じ式)
+  - 対象 JAN 数 n = histogram のうち買取価格の範囲に入る帯の合計 (帯の途中は按分)
+  - API 段階 (分) = n / `jan_per_min`、確定判定 (秒) = n × `candidates_per_jan` × (reachable なら `reachable_fraction`、all なら 1) × `seconds_per_check`
+  - 既定の rates (2026-10-04 の実測): jan_per_min 27.6 / candidates_per_jan 1.1 / reachable_fraction 0.28 / seconds_per_check 4.1
+  - 所要時間に効くのは 買取価格の範囲 (JAN 数)・`page_scope`・`reach_slack` / `min_profit` (届きそうの広さ)・`deadline`
+
 ### 商品ページの落とし穴 (2026-10-04 調査)
 - ストアクーポンは HTML に無い。`POST /syene-bff/v1/pc/coupon/v3/{店舗ID}/{商品コード}` で取る。ページが発行する匿名 Cookie と `page.crumb` が必要 (無いと 401)
 - **ログインなしでは見えないクーポンがある**: アカウントで獲得済みの限定クーポン (例: Joshin の「60,000円以上で 2,000円OFF」) は、価格や会員フラグを変えて問い合わせても返らない → `coupons.csv` には載らない。設定の `coupons` (手持ちクーポン) に手で登録する
@@ -129,6 +164,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 - `products` (jan_code PK, name, source, category, ...)
 - `price_history` (jan_code, source, condition, scraped_date, price, ...) - 主キー4列
 - `arbitrage_runs` / `arbitrage_results` / `arbitrage_owner` (`db/arbitrage.sql`): 利益商品の結果。オーナーだけ SELECT 可、anon は常に 0 件
+- `arbitrage_research_requests` / `arbitrage_worker_state` (`db/arbitrage_research.sql`): リサーチの依頼と待ち受けの状態。オーナーだけ SELECT 可
 - 価格推移SQLは README 参照
 - **落とし穴**: `products` の主キーは `jan_code` のみ。`source` は最後に書いたサイトで上書きされるので、サイト別の件数は `products` ではなく **`price_history` で数える** (`where scraped_date = ... group by source`)
 
