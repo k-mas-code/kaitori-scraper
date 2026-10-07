@@ -2,8 +2,11 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from arbitrage.buyback import Buyback
+from arbitrage.categories import GROUPS
 from arbitrage.research import (DEFAULT_RATES, ParamsError, ResearchParams, build_run_args, buyback_histogram,
-                                clean_rates, count_targets, estimate, parse_params, updated_rates)
+                                buyback_histogram_fields, clean_rates, count_targets, estimate, parse_params,
+                                updated_rates)
 from arbitrage.run import parse_args
 
 JST = timezone(timedelta(hours=9))
@@ -136,3 +139,61 @@ def test_huge_integers_are_rejected_or_kept_as_int_without_other_exceptions(key)
     else:
         with pytest.raises(ParamsError, match=key):
             parse_params(raw)
+
+
+# ---- 商品分類 (大分類) ----
+
+HISTOGRAM_GROUPED = {**HISTOGRAM, "by_group": {"家電": {"0": 10, "5000": 100}, "ゲーム": {"1000": 50}, "その他": {}}}
+
+
+def test_parse_params_categories():
+    assert parse_params({"purchase_date": "2026-10-11"}).categories == ()
+    assert parse_params({"purchase_date": "2026-10-11", "categories": None}).categories == ()
+    assert parse_params({"purchase_date": "2026-10-11", "categories": []}).categories == ()
+    p = parse_params({"purchase_date": "2026-10-11", "categories": ["家電", "ゲーム"]})
+    assert p.categories == ("家電", "ゲーム")
+    assert parse_params({"purchase_date": "2026-10-11", "categories": list(GROUPS)}).categories == GROUPS
+
+
+@pytest.mark.parametrize("value, match", [
+    ("家電", "categories.*配列"),
+    (["kaden"], "不明な大分類"),
+    (["家電", 1], "不明な大分類"),
+    (["家電", "家電"], "重複"),
+    (list(GROUPS) + ["家電"], "最大 11 個"),
+])
+def test_parse_params_rejects_bad_categories(value, match):
+    with pytest.raises(ParamsError, match=match):
+        parse_params({"purchase_date": "2026-10-11", "categories": value})
+
+
+def test_build_run_args_adds_category_per_group_and_run_accepts_them():
+    p = parse_params({"purchase_date": "2026-10-11", "categories": ["家電", "ゲーム"]})
+    argv = build_run_args(p, 3)
+    assert argv[-4:] == ["--category", "家電", "--category", "ゲーム"]
+    assert parse_args(argv).category == ["家電", "ゲーム"]
+    assert "--category" not in build_run_args(parse_params({"purchase_date": "2026-10-11"}), 3)
+    with pytest.raises(SystemExit):
+        parse_args(["--category", "kaden"])
+
+
+def test_buyback_histogram_fields_counts_whole_and_by_group():
+    items = [Buyback("1", 500, "rudeya", "d", "家電"), Buyback("2", 5500, "rudeya", "d", "家電"),
+             Buyback("3", 1200, "rudeya", "d", "ゲーム"), Buyback("4", 61000, "rudeya", "d", None)]
+    fields = buyback_histogram_fields(items)
+    assert fields["bucket"] == 1000 and fields["counts"] == {"0": 1, "1000": 1, "5000": 1, "61000": 1}
+    assert list(fields["by_group"]) == list(GROUPS)
+    assert fields["by_group"]["家電"] == {"0": 1, "5000": 1} and fields["by_group"]["ゲーム"] == {"1000": 1}
+    assert fields["by_group"]["その他"] == {"61000": 1} and fields["by_group"]["カメラ"] == {}
+    assert buyback_histogram_fields([])["counts"] == {}
+
+
+def test_count_targets_uses_by_group_when_categories_given():
+    assert count_targets(HISTOGRAM_GROUPED, None, None) == 640                       # 指定なし = counts
+    assert count_targets(HISTOGRAM_GROUPED, None, None, ("家電",)) == 110
+    assert count_targets(HISTOGRAM_GROUPED, None, None, ("家電", "ゲーム")) == 160
+    assert count_targets(HISTOGRAM_GROUPED, 5000, None, ("家電", "ゲーム")) == 100
+    assert count_targets(HISTOGRAM_GROUPED, None, None, ("カメラ",)) == 0              # 帯が無い分類
+    assert count_targets(HISTOGRAM, None, None, ("家電",)) == 0                        # by_group の無い古い分布
+    p = parse_params({"purchase_date": "2026-10-11", "categories": ["家電"]})
+    assert estimate(p, HISTOGRAM_GROUPED, None).jan_count == 110

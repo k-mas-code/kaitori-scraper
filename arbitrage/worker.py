@@ -22,10 +22,10 @@ from typing import Callable
 from dotenv import load_dotenv
 
 from . import db
-from .buyback import load_buyback_prices
+from .buyback import Buyback, load_buyback_prices
 from .config import ROOT
 from .progress import EXIT_CANCELLED
-from .research import (DEFAULT_RATES, HISTOGRAM_BUCKET, ParamsError, build_run_args, buyback_histogram,
+from .research import (DEFAULT_RATES, HISTOGRAM_BUCKET, ParamsError, build_run_args, buyback_histogram_fields,
                        parse_params, updated_rates)
 from .state import RUNS_DIR, lock_file
 
@@ -58,9 +58,9 @@ def spawn_run(argv: list[str], log_path: Path) -> subprocess.Popen:
                                 start_new_session=True)
 
 
-def load_histogram_prices() -> list[int]:
-    """いまの買取価格 (run の対象と同じ: 直近 7 日の新品最高値)"""
-    return [b.price for b in load_buyback_prices(date.today()).values()]
+def load_histogram_prices() -> list[Buyback]:
+    """いまの買取価格 (run の対象と同じ: 直近 7 日の新品最高値。大分類つき)"""
+    return list(load_buyback_prices(date.today()).values())
 
 
 def run_pid_alive(pid: int, request_id: int) -> bool:
@@ -124,7 +124,7 @@ class Worker:
 
     def __init__(self, client, *, db_api=db, spawn: Callable = spawn_run, clock: Callable[[], datetime] = utc_now,
                  sleep: Callable[[float], None] = time.sleep,
-                 load_prices: Callable[[], list[int]] = load_histogram_prices,
+                 load_prices: Callable[[], list[Buyback]] = load_histogram_prices,
                  runs_dir: Path = RUNS_DIR, python: str = sys.executable,
                  pid_alive: Callable[[int, int], bool] = run_pid_alive,
                  interrupt: Callable[[int], None] = interrupt_pid):
@@ -203,14 +203,14 @@ class Worker:
         now = self.clock()
         if self.histogram_at is not None and now - self.histogram_at < HISTOGRAM_REFRESH:
             return
-        counts = buyback_histogram(self.load_prices(), HISTOGRAM_BUCKET)
-        fields = {"buyback_histogram": {"bucket": HISTOGRAM_BUCKET, "as_of": now.isoformat(), "counts": counts}}
+        histogram = buyback_histogram_fields(self.load_prices(), HISTOGRAM_BUCKET)
+        fields = {"buyback_histogram": {**histogram, "as_of": now.isoformat()}}
         current = self.db.fetch_worker_state(self.client)
         if not current or not current.get("rates"):
             fields["rates"] = dict(DEFAULT_RATES)
         self.db.upsert_worker_state(self.client, fields)
         self.histogram_at = now
-        logger.info("買取価格の分布を保存: %d JAN", sum(counts.values()))
+        logger.info("買取価格の分布を保存: %d JAN", sum(histogram["counts"].values()))
 
     def safe_refresh_state(self) -> None:
         """分布の更新に失敗しても依頼の処理は続ける (5 分後にやり直す)"""

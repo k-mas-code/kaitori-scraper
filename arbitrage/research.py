@@ -11,11 +11,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable
 
+from .categories import GROUPS
 from .config import DATE_RE
 from .scope import DEFAULT_REACH_SLACK, MAX_REACH_SLACK, PAGE_SCOPES, SCOPE_REACHABLE
 
 PARAM_KEYS = {"purchase_date", "min_buyback", "max_buyback", "min_profit", "page_scope", "reach_slack",
-              "deadline"}
+              "deadline", "categories"}
 MIN_PROFIT_RANGE = (-5000, 100000)   # 下限は run.KEEP_ROW_MIN_PROFIT と同じ
 HISTOGRAM_BUCKET = 1000
 
@@ -41,6 +42,7 @@ class ResearchParams:
     page_scope: str = SCOPE_REACHABLE
     reach_slack: float = DEFAULT_REACH_SLACK
     deadline: datetime | None = None    # 終了時刻の上限 (タイムゾーン付き)
+    categories: tuple[str, ...] = ()    # 大分類 (categories.GROUPS) で対象を絞る。空 = すべて
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,23 @@ def _deadline(raw: dict) -> datetime | None:
     return parsed
 
 
+def _categories(raw: dict) -> tuple[str, ...]:
+    """大分類の配列。null / 空配列 = すべて。GROUPS に無い名前・重複・配列以外は拒否する"""
+    value = raw.get("categories")
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ParamsError(f"categories: 大分類名の配列か null で指定する: {value!r}")
+    if len(value) > len(GROUPS):
+        raise ParamsError(f"categories: 最大 {len(GROUPS)} 個: {len(value)} 個")
+    unknown = [v for v in value if not isinstance(v, str) or v not in GROUPS]
+    if unknown:
+        raise ParamsError(f"categories: 不明な大分類: {', '.join(map(repr, unknown))} ({' / '.join(GROUPS)} のいずれか)")
+    if len(set(value)) != len(value):
+        raise ParamsError(f"categories: 重複がある: {value!r}")
+    return tuple(value)
+
+
 def parse_params(raw) -> ResearchParams:
     """依頼の params を検証する。不明なキー・範囲外の値は場所と理由を付けて拒否する"""
     if not isinstance(raw, dict):
@@ -121,7 +140,7 @@ def parse_params(raw) -> ResearchParams:
             or not 0 <= reach_slack <= MAX_REACH_SLACK:
         raise ParamsError(f"reach_slack: 0 以上 {MAX_REACH_SLACK} 以下の数値で指定する: {reach_slack!r}")
     return ResearchParams(purchase_date, min_buyback, max_buyback, min_profit, page_scope,
-                          float(reach_slack), _deadline(raw))
+                          float(reach_slack), _deadline(raw), _categories(raw))
 
 
 def build_run_args(params: ResearchParams, request_id: int) -> list[str]:
@@ -137,6 +156,8 @@ def build_run_args(params: ResearchParams, request_id: int) -> list[str]:
         args += ["--max-buyback", str(int(params.max_buyback))]
     if params.deadline is not None:
         args += ["--deadline", params.deadline.isoformat()]
+    for group in params.categories:
+        args += ["--category", group]
     return args
 
 
@@ -147,6 +168,22 @@ def buyback_histogram(prices: Iterable[int], bucket: int = HISTOGRAM_BUCKET) -> 
         key = price // bucket * bucket
         counts[key] = counts.get(key, 0) + 1
     return {str(key): counts[key] for key in sorted(counts)}
+
+
+def buyback_histogram_fields(buybacks, bucket: int = HISTOGRAM_BUCKET) -> dict:
+    """arbitrage_worker_state.buyback_histogram の中身 (as_of を除く): 全体の counts と大分類ごとの by_group。
+
+    buybacks は .price / .category を持つもの (Buyback)。category が GROUPS に無い (None など) ものは「その他」に数える。
+    by_group はすべての大分類をキーに持つ (件数 0 なら {})。
+    """
+    items = list(buybacks)
+    by_group = {group: buyback_histogram((b.price for b in items if _group_of(b) == group), bucket)
+                for group in GROUPS}
+    return {"bucket": bucket, "counts": buyback_histogram((b.price for b in items), bucket), "by_group": by_group}
+
+
+def _group_of(buyback) -> str:
+    return buyback.category if buyback.category in GROUPS else GROUPS[-1]
 
 
 def clean_rates(rates) -> dict[str, float]:
@@ -160,29 +197,42 @@ def clean_rates(rates) -> dict[str, float]:
     return cleaned
 
 
-def count_targets(histogram, min_buyback: int | None, max_buyback: int | None) -> float:
+def _histogram_counts(histogram, categories) -> list[dict]:
+    """数える帯の表。categories があれば by_group のその分類だけ (by_group が無い古い分布なら空 = 0 件)、無ければ counts"""
+    if not categories:
+        counts = histogram.get("counts")
+        return [counts] if isinstance(counts, dict) else []
+    by_group = histogram.get("by_group")
+    if not isinstance(by_group, dict):
+        return []
+    return [by_group[g] for g in categories if isinstance(by_group.get(g), dict)]
+
+
+def count_targets(histogram, min_buyback: int | None, max_buyback: int | None, categories=()) -> float:
     """分布から、買取価格が min_buyback〜max_buyback (両端を含む) の JAN 数を数える。
 
+    categories (大分類名の列) があれば by_group のそれらの合計、無ければ counts (全体) で数える。
     帯 [k, k + bucket) の途中に境界があるときは、帯の中で価格が一様だとみなして按分する。
     """
-    if not isinstance(histogram, dict) or not isinstance(histogram.get("counts"), dict):
+    if not isinstance(histogram, dict):
         return 0.0
     bucket = histogram.get("bucket") or HISTOGRAM_BUCKET
     low = 0 if min_buyback is None else min_buyback
     high = math.inf if max_buyback is None else max_buyback + 1   # 整数の価格なので「以下」= 「+1 未満」
     total = 0.0
-    for key, count in histogram["counts"].items():
-        start = int(key)
-        overlap = min(start + bucket, high) - max(start, low)
-        if overlap > 0:
-            total += count * overlap / bucket
+    for counts in _histogram_counts(histogram, categories):
+        for key, count in counts.items():
+            start = int(key)
+            overlap = min(start + bucket, high) - max(start, low)
+            if overlap > 0:
+                total += count * overlap / bucket
     return total
 
 
 def estimate(params: ResearchParams, histogram, rates) -> Estimate:
     """所要時間の予測。histogram は arbitrage_worker_state.buyback_histogram、rates は同 rates (欠けは既定値)"""
     r = clean_rates(rates)
-    jan_count = count_targets(histogram, params.min_buyback, params.max_buyback)
+    jan_count = count_targets(histogram, params.min_buyback, params.max_buyback, params.categories)
     fraction = r["reachable_fraction"] if params.page_scope == SCOPE_REACHABLE else 1.0
     page_checks = jan_count * r["candidates_per_jan"] * fraction
     return Estimate(jan_count, jan_count / r["jan_per_min"], page_checks, page_checks * r["seconds_per_check"])
