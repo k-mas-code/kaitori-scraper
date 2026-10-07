@@ -6,7 +6,7 @@ import pytest
 
 from arbitrage.config import BsPlusConfig, Campaign, CampaignConfig
 from arbitrage.finalize import (NOT_PROFITABLE, SKIP_JAN_MISMATCH, SKIP_USED, SKIP_VARIATIONS, build_result,
-                                final_components, same_jan, skip_reason)
+                                SKIP_DIFFERENT_ITEM, final_components, same_jan, skip_reason)
 from arbitrage.points import PointComponent
 from arbitrage.stores import Store
 from arbitrage.yahoo_page import (PageFormatError, coupon_is_valid, extract_page_props, parse_coupon_detail,
@@ -97,6 +97,9 @@ def test_skip_reasons():
     assert skip_reason(candidate(page("janpara"), 1), page("janpara")) == SKIP_USED
     assert skip_reason(candidate(page("anker"), 1), page("anker")) == SKIP_VARIATIONS
     assert same_jan("840353956209", "0840353956209") and not same_jan(None, "1")
+    # 本体の JAN で付属品を出品している店: 販売価格が買取価格の半分未満なら別商品として除外する (joshin は 54,780 円)
+    assert skip_reason(candidate(p, 109560), p) is None
+    assert skip_reason(candidate(p, 109561), p) == SKIP_DIFFERENT_ITEM
 
 
 def test_final_components_use_page_upsell_and_list_bsplus():

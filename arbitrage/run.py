@@ -223,8 +223,9 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
     except (ConfigError, StoreListError) as e:
         logger.error("%s", e)
         return 2
-    logger.info("設定: %s / 実行日 %s (%s) / キャンペーン %d 件, 手持ちクーポン %d 件が有効", source, run_date,
-                "--date" if args.date else "設定の購入予定日", len(cfg.campaigns), len(cfg.coupons))
+    logger.info("設定: %s / 実行日 %s (%s) / キャンペーン %d 件, 手持ちクーポン %d 件, 店ごとの上乗せ %d 件が有効",
+                source, run_date, "--date" if args.date else "設定の購入予定日",
+                len(cfg.campaigns), len(cfg.coupons), len(cfg.store_upsell))
     bsplus_stores = sum(1 for s in stores.stores.values() if s.bsplus_rate > 0)
     logger.info("stores: %d (うち %s のボーナスストアPlus枠あり %d)", len(stores.stores), run_date, bsplus_stores)
 

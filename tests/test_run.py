@@ -132,7 +132,10 @@ def test_check_config_shows_source_date_and_active_items(tmp_path, capsys):
         "  - {name: 加算, rate: 0.02, target: bsplus, dates: [2026-10-05]}\n"
         "coupons:\n"
         "  - {name: 手持ち, type: fixed, value: 2000, min_purchase: 60000, target: stores, store_ids: [zz]}\n"
-        "  - {name: 期限切れ, type: percent, value: 0.1, valid_until: 2026-10-05}\n", encoding="utf-8")
+        "  - {name: 期限切れ, type: percent, value: 0.1, valid_until: 2026-10-05}\n"
+        "store_upsell:\n"
+        "  - {store_id: s1, rate: 0.14, note: ログイン時のみ, valid_from: 2026-10-01, valid_until: 2026-10-05}\n"
+        "  - {store_id: zz, rate: 0.09}\n", encoding="utf-8")
     settings, source = load_settings(path)
     stores = StoreList(STORES.stores, date(2026, 10, 4), None, "x.xlsx")
     print_config(settings, active_config(settings, date(2026, 10, 4)), stores, source)
@@ -141,10 +144,14 @@ def test_check_config_shows_source_date_and_active_items(tmp_path, capsys):
     assert "日曜: 5%" in out and "加算" not in out and "日付外で無効: 1 件" in out
     assert "手持ち: 2,000円OFF、60,000円以上" in out and "店舗リストに無い店ID: zz" in out
     assert "期限切れ: 10%OFF" in out and "期間外で無効: 0 件" in out
+    assert "[store_upsell]" in out
+    assert "- s1: 上乗せ 14% (ログイン時のみ)、期間 2026-10-01 〜 2026-10-05" in out
+    assert "- zz: 上乗せ 9%、期間 指定なし 〜 指定なし  ※店舗リストに無い店ID" in out
     print_config(settings, active_config(settings, date(2026, 10, 11)),
                  StoreList(STORES.stores, date(2026, 10, 11), None, "x.xlsx"), source)
     out = capsys.readouterr().out
     assert "上書き" not in out and "期限切れ" not in out and "期間外で無効: 1 件" in out
+    assert "- s1: 上乗せ" not in out and "- zz: 上乗せ 9%" in out
 
 
 def test_manual_coupon_keeps_paging_alive():

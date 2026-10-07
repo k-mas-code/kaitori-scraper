@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from arbitrage.config import (ROOT, ConfigError, active_campaigns, active_config, active_coupons,
-                              load_settings_file, parse_settings)
+                              active_store_upsell, load_settings_file, parse_settings)
 
 D = Decimal
 
@@ -34,6 +34,12 @@ def base() -> dict:
             {"name": "モール 10%", "type": "percent", "value": 0.1, "max_discount": 3000,
              "valid_from": "2026-10-10", "valid_until": "2026-10-12"},
             {"name": "いつでも", "type": "fixed", "value": 300},
+        ],
+        "store_upsell": [
+            {"store_id": "denkichiweb", "rate": 0.14, "note": "ログイン時のみ表示",
+             "valid_from": "2026-10-08", "valid_until": "2026-10-31"},
+            {"store_id": "denkichiweb", "rate": 0.09, "valid_until": "2026-10-07"},    # 期間が重ならない同じ店
+            {"store_id": "joshin", "rate": 0.05},
         ],
         "bsplus": {"cap_per_order": None, "cap_per_period": None},
     }
@@ -69,6 +75,11 @@ def test_valid_settings_are_parsed():
     assert (mall.type, mall.value, mall.max_discount, mall.target) == ("percent", D("0.1"), 3000, "all")
     assert anytime.min_purchase == 0 and anytime.valid_until is None
     assert s.bsplus.cap is None and s.raw == base()
+    denkichi, old, joshin_up = s.store_upsell
+    assert (denkichi.store_id, denkichi.rate, denkichi.note) == ("denkichiweb", D("0.14"), "ログイン時のみ表示")
+    assert denkichi.valid_from == date(2026, 10, 8) and denkichi.valid_until == date(2026, 10, 31)
+    assert old.valid_from is None and old.valid_until == date(2026, 10, 7) and old.note is None
+    assert joshin_up.rate == D("0.05") and joshin_up.valid_from is None and joshin_up.valid_until is None
 
 
 def test_cap_is_min_of_order_and_period_and_null_min_purchase_is_zero():
@@ -82,6 +93,7 @@ def test_cap_is_min_of_order_and_period_and_null_min_purchase_is_zero():
 def test_sections_can_be_omitted():
     s = parse_settings({"version": 1, "purchase_date": "2026-10-11"})
     assert s.common == () and s.campaigns == () and s.coupons == () and s.bsplus.cap is None
+    assert s.store_upsell == () and active_config(s, s.purchase_date).store_upsell == ()
 
 
 @pytest.mark.parametrize("path,value,message", [
@@ -148,6 +160,26 @@ def test_sections_can_be_omitted():
     (["coupons", 0, "store_ids"], [], "store_ids"),
     (["coupons", 0, "valid_until"], "10/05", "YYYY-MM-DD"),
     (["coupons", 1, "valid_from"], "2026-10-13", "valid_from"),      # 開始が終了より後
+    # 店ごとの上乗せ
+    (["store_upsell"], {"store_id": "x"}, "リスト"),
+    (["store_upsell", 0], "denkichiweb", "マッピング"),
+    (["store_upsell", 0, "store_id"], DELETE, "store_id"),
+    (["store_upsell", 0, "store_id"], "", "store_id"),
+    (["store_upsell", 0, "store_id"], 5, "store_id"),
+    (["store_upsell", 0, "rate"], DELETE, "rate"),
+    (["store_upsell", 0, "rate"], 14, "rate"),                       # 14% を 14 と書いた
+    (["store_upsell", 0, "rate"], 0, "rate"),
+    (["store_upsell", 0, "rate"], 1.5, "rate"),
+    (["store_upsell", 0, "rate"], "0.14", "rate"),
+    (["store_upsell", 0, "upsell"], 0.14, "不明なキー"),
+    (["store_upsell", 0, "name"], "デンキチ", "不明なキー"),
+    (["store_upsell", 0, "note"], 1, "note"),
+    (["store_upsell", 0, "valid_from"], "10/08", "YYYY-MM-DD"),
+    (["store_upsell", 0, "valid_from"], "2026-11-01", "valid_from"),  # 開始が終了より後
+    (["store_upsell", 1, "valid_until"], "2026-10-08", "重複"),      # 同じ店で期間が重なる
+    (["store_upsell", 1, "valid_until"], None, "重複"),
+    (["store_upsell", 2, "store_id"], "denkichiweb", "重複"),        # 期間なし = 常に重なる
+    (["store_upsell", 2, "store_id"], " denkichiweb ", "重複"),      # 前後の空白は無視
 ])
 def test_invalid_settings_are_rejected(path, value, message):
     with pytest.raises(ConfigError, match=message):
@@ -159,6 +191,8 @@ def test_error_names_the_place():
         parse_settings(changed(["campaigns", 1, "rate"], 2))
     with pytest.raises(ConfigError, match=r"coupons\[0\] \(Joshin 2,000円OFF\)"):
         parse_settings(changed(["coupons", 0, "value"], -5))
+    with pytest.raises(ConfigError, match=r"store_upsell\[0\] \(denkichiweb\)"):
+        parse_settings(changed(["store_upsell", 0, "rate"], 14))
     with pytest.raises(ConfigError):
         parse_settings([])
 
@@ -185,6 +219,12 @@ def test_filtering_by_date():
     assert names(active_coupons(s, date(2026, 10, 10))) == ["モール 10%", "いつでも"]
     assert names(active_coupons(s, date(2026, 10, 12))) == ["モール 10%", "いつでも"]
     assert names(active_coupons(s, date(2026, 10, 13))) == ["いつでも"]
+    # 店ごとの上乗せも有効期間 (両端を含む) で絞る。同じ店は期間違いで 1 件に決まる
+    rates = lambda day: {u.store_id: u.rate for u in active_store_upsell(s, day)}   # noqa: E731
+    assert rates(date(2026, 10, 7)) == {"denkichiweb": D("0.09"), "joshin": D("0.05")}
+    assert rates(date(2026, 10, 8)) == {"denkichiweb": D("0.14"), "joshin": D("0.05")}
+    assert rates(date(2026, 10, 31)) == {"denkichiweb": D("0.14"), "joshin": D("0.05")}
+    assert rates(date(2026, 11, 1)) == {"joshin": D("0.05")}
 
 
 def test_active_config_keeps_only_that_day():
@@ -192,16 +232,33 @@ def test_active_config_keeps_only_that_day():
     cfg = active_config(s, date(2026, 10, 11))
     assert [c.component.name for c in cfg.campaigns] == ["日曜"] and cfg.common == s.common
     assert [c.name for c in cfg.coupons] == ["モール 10%", "いつでも"]
+    assert [(u.store_id, u.rate) for u in cfg.store_upsell] == [("denkichiweb", D("0.14")), ("joshin", D("0.05"))]
+    assert cfg.upsell_rate("denkichiweb") == D("0.14") and cfg.upsell_rate("unknown") == 0
     # raw は同じ仕様の JSON で、その日に有効な分だけ (保存・再開時の一致チェック用)
     assert cfg.raw["purchase_date"] == "2026-10-11" and cfg.raw["version"] == 1
     assert [c["name"] for c in cfg.raw["campaigns"]] == ["日曜"]
     assert [c["name"] for c in cfg.raw["coupons"]] == ["モール 10%", "いつでも"]
+    assert [(u["store_id"], u["rate"]) for u in cfg.raw["store_upsell"]] == [("denkichiweb", 0.14), ("joshin", 0.05)]
     assert parse_settings(cfg.raw).campaigns == cfg.campaigns
+    assert parse_settings(cfg.raw).store_upsell == cfg.store_upsell
     # 日付外の項目だけを変えても、その日の設定 (raw) は変わらない
     edited = copy.deepcopy(base())
     edited["campaigns"][1]["rate"] = 0.5
     edited["purchase_date"] = "2026-10-18"
+    edited["store_upsell"][1]["rate"] = 0.3                       # 10-07 までの行
     assert active_config(parse_settings(edited), date(2026, 10, 11)).raw == cfg.raw
+    # 期間違いの行が選ばれる日は、その行だけが raw に残る
+    assert [u["rate"] for u in active_config(s, date(2026, 10, 7)).raw["store_upsell"]] == [0.09, 0.05]
+    # 再開条件はキーの有無ではなく中身で決める: その日に有効な行が無ければ raw からキーごと省く。
+    # store_upsell を省いた設定 (この機能より前に始めた run の meta.config) と、設定画面の保存で必ず書かれる
+    # store_upsell: [] と、期間外の行だけの設定は、どれも同じ raw になる
+    without = copy.deepcopy(base()); del without["store_upsell"]
+    empty = copy.deepcopy(base()); empty["store_upsell"] = []
+    expired = copy.deepcopy(base())
+    expired["store_upsell"] = [{"store_id": "denkichiweb", "rate": 0.09, "valid_until": "2026-10-07"}]
+    raws = [active_config(parse_settings(x), date(2026, 10, 11)).raw for x in (without, empty, expired)]
+    assert raws[0] == raws[1] == raws[2] and "store_upsell" not in raws[0]
+    assert active_config(parse_settings(empty), date(2026, 10, 11)).store_upsell == ()
     # --date で別の日にすれば、その日の分になる
     other = active_config(s, date(2026, 10, 5))
     assert [c.component.name for c in other.campaigns] == ["全体加算+2", "全体加算+3"]
@@ -210,9 +267,9 @@ def test_active_config_keeps_only_that_day():
 
 def test_example_file_is_valid():
     s = load_settings_file(ROOT / "config" / "campaigns.example.yaml")
-    assert s.common and s.campaigns and s.coupons
+    assert s.common and s.campaigns and s.coupons and s.store_upsell
     cfg = active_config(s, s.purchase_date)
-    assert cfg.campaigns and cfg.coupons
+    assert cfg.campaigns and cfg.coupons and cfg.store_upsell
     json.dumps(cfg.raw)   # YAML が日付として読んだ値も、保存できる形 (文字列) になっている
 
 

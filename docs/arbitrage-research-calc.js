@@ -2,7 +2,7 @@
 // 画面は arbitrage-research.js。依頼の params の検証・組み立て、所要時間の予測、その日に有効な
 // キャンペーン・クーポンの抽出、実行状況の判定、表示整形をここに置く。
 import {
-  isValidDate, isCampaignActive, isCouponActive, parseOptionalInt, percentToRate, rateToPercent,
+  isValidDate, isCampaignActive, isCouponActive, isStoreUpsellActive, parseOptionalInt, percentToRate, rateToPercent,
 } from './arbitrage-settings.js';
 
 // worker_state の rates が無い・欠けているときの値 (arbitrage/research.py と同じ)
@@ -305,7 +305,16 @@ export function activeOnDate(config, date) {
     common: objectRows(c.common),
     campaigns: objectRows(c.campaigns).filter((row) => isCampaignActive(Array.isArray(row.dates) ? row.dates : [], date)),
     coupons: objectRows(c.coupons).filter((row) => isCouponActive(row.valid_from, row.valid_until, date)),
+    store_upsell: objectRows(c.store_upsell).filter((row) => isStoreUpsellActive(row.valid_from, row.valid_until, date)),
   };
+}
+
+/** 店ごとのポイント上乗せの 1 行表示: 店ID / +14% / メモ・期限 */
+export function describeStoreUpsell(row) {
+  const notes = [];
+  if (str(row.note).trim()) notes.push(str(row.note).trim());
+  if (row.valid_until) notes.push(`${str(row.valid_until)} まで`);
+  return { name: str(row.store_id) || '（店IDなし）', value: `+${rateToPercent(row.rate) || '?'}%`, note: notes.join('、') };
 }
 
 /** ポイント (毎日付く分・キャンペーン) の 1 行表示: 名前 / +5% / 上限など */

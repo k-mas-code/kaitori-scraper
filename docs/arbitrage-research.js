@@ -6,9 +6,9 @@ import { isValidDate } from './arbitrage-settings.js';
 import {
   ACTIVE_STATUSES, CATEGORY_GROUPS, MIN_PROFIT_RANGE, STAGE_LABELS, STATUS_LABELS,
   activeOnDate, buildParams, canShowResults, checkDeadline, countJansByGroup, describeCoupon, describePoint,
-  estimateDuration, formatDateTime, formatDuration, hasGroupCounts, hasNewlyFinished, isActiveStatus, isInt,
-  isMissingTableError, isObject, isWorkerAlive, num, paramsToForm, progressPercent, purchaseDateToApply, str,
-  summarizeParams, todayIso,
+  describeStoreUpsell, estimateDuration, formatDateTime, formatDuration, hasGroupCounts, hasNewlyFinished,
+  isActiveStatus, isInt, isMissingTableError, isObject, isWorkerAlive, num, paramsToForm, progressPercent,
+  purchaseDateToApply, str, summarizeParams, todayIso,
 } from './arbitrage-research-calc.js';
 
 const POLL_ACTIVE_MS = 15000;   // 有効な依頼がある間
@@ -256,9 +256,10 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       date < todayIso() && h('p', { class: 'text-sm text-amber-700' }, '購入予定日が過去の日付です。'),
       listBlock(`${date} のキャンペーン`, active.campaigns.map(describePoint), 'この日が対象日のキャンペーンはありません'),
       listBlock('使える手持ちクーポン', active.coupons.map(describeCoupon), 'この日に有効な手持ちクーポンはありません'),
+      listBlock('店ごとのポイント上乗せ (手入力)', active.store_upsell.map(describeStoreUpsell), 'この日に有効な登録はありません'),
       listBlock('毎日付くポイント', active.common.map(describePoint), '登録なし'),
       h('p', { class: 'text-xs text-slate-400 mt-2' },
-        'ストアポイントとボーナスストアPlus (+4% / +9%) は、商品ページと店舗リストから自動で読みます。'));
+        'ストアポイントとボーナスストアPlus (+4% / +9%) は、商品ページと店舗リストから自動で読みます。店ごとの上乗せは、ページの率と設定の率の大きい方を使います。'));
   }
 
   function currentEstimate(form, now) {
