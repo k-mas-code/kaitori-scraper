@@ -16,7 +16,12 @@ SKIP_USED = "used"
 SKIP_VARIATIONS = "variations"        # 色・サイズ違いがあり、どの SKU の価格・JAN か特定できない
 SKIP_JAN_MISMATCH = "jan_mismatch"
 SKIP_STORE_MISMATCH = "store_mismatch"
+SKIP_DIFFERENT_ITEM = "different_item"   # 本体の JAN で付属品 (ノズル等) を出品している店。価格が買取価格に遠く及ばない
 NOT_PROFITABLE = "not_profitable"
+
+# 販売価格が買取価格のこの割合未満なら別商品とみなす (本物の利益率は高くても数十%。2026-10-07 に 918 円のノズルが
+# ドライヤー本体の JAN で返り、+27,000 円の誤検出になった)
+MIN_PRICE_RATIO = 0.5
 
 
 def same_jan(a: str | None, b: str | None) -> bool:
@@ -38,6 +43,8 @@ def skip_reason(candidate: dict, page: ItemPage | None) -> str | None:
     # ページに JAN が無い商品は API の JAN 検索の結果を信じる
     if page.jan_code and not same_jan(page.jan_code, candidate["jan_code"]):
         return SKIP_JAN_MISMATCH
+    if page.price < candidate["buyback_price"] * MIN_PRICE_RATIO:
+        return SKIP_DIFFERENT_ITEM
     return None
 
 
