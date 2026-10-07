@@ -76,6 +76,17 @@ def test_select_targets_filters_by_price_and_spreads_limit():
     assert select_targets(items, None, None, 5000) == select_targets(items, None, None, None)
 
 
+def test_select_targets_filters_by_category_and_drops_uncategorized():
+    items = [Buyback("1", 100, "rudeya", "d", "家電"), Buyback("2", 200, "rudeya", "d", "ゲーム"),
+             Buyback("3", 300, "rudeya", "d", "その他"), Buyback("4", 400, "rudeya", "d", None)]   # 4 = 古い run の保存分
+    assert [b.jan_code for b in select_targets(items, None, None, None)] == ["4", "3", "2", "1"]
+    assert [b.jan_code for b in select_targets(items, None, None, None, [])] == ["4", "3", "2", "1"]
+    assert [b.jan_code for b in select_targets(items, None, None, None, ["家電"])] == ["1"]
+    assert [b.jan_code for b in select_targets(items, None, None, None, ["ゲーム", "家電"])] == ["2", "1"]
+    assert [b.jan_code for b in select_targets(items, None, None, None, ["その他"])] == ["3"]   # None は「その他」に入れない
+    assert [b.jan_code for b in select_targets(items, 150, None, None, ["ゲーム", "家電"])] == ["2"]
+
+
 # ---- 設定の読み込み元と実行日 ----
 
 def test_date_defaults_to_none_so_purchase_date_is_used():

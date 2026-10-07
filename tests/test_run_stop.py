@@ -61,7 +61,11 @@ def world(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(run_module, "load_stores", lambda run_date: stores)
     monkeypatch.setattr(run_module, "ItemSearchClient", lambda client_id: client)
     monkeypatch.setattr(run_module, "load_buyback_prices",
-                        lambda today: {j: Buyback(j, 9000, "rudeya", "2026-10-04") for j in JANS})
+                        lambda today: {j: Buyback(j, 9000, "rudeya", "2026-10-04", "家電" if i % 2 == 0 else "ゲーム")
+                                       for i, j in enumerate(JANS)})
+    monkeypatch.setattr(run_module, "read_credentials", lambda: ("http://x", "k"))
+    monkeypatch.setattr(run_module, "load_categories",
+                        lambda url, key: {j: "家電" if i % 2 == 0 else "ゲーム" for i, j in enumerate(JANS)})
     monkeypatch.setattr(run_module, "PageClient", lambda: type("FakePages", (), {"request_count": 0})())
     monkeypatch.setattr(run_module, "check_candidate", w.check_candidate)
     monkeypatch.setattr(run_module.logging, "basicConfig", lambda **kw: None)
@@ -108,6 +112,27 @@ def test_reachable_scope_checks_only_reachable_candidates_and_exits_ok(world):
     assert world.main("--page-scope", "all") == 0
     assert len(world.checked) == 10 and all(code.endswith("_11500") for code in world.checked[5:])
     assert len(world.searched) == 5
+
+
+def test_category_filters_targets_and_is_not_a_resume_condition(world):
+    # 家電は 3 件 (1 件 60 秒)。90 秒後が上限 → 2 件目を終えた時点で打ち切り、再開コマンドに --category が付く
+    assert world.main("--category", "家電", "--deadline", (T0 + timedelta(seconds=90)).isoformat()) == 0
+    assert len(world.searched) == 2 and "--category 家電" in world.caplog.text
+    assert world.main("--category", "家電") == 0
+    assert len(world.searched) == 3 and "target JANs: 3" in world.caplog.text
+    # 条件 (meta) には含まれないので、同じ run のまま別の分類を続けて検索できる
+    assert world.main("--category", "ゲーム", "--category", "家電") == 0
+    assert len(world.searched) == 5
+    # 古い run の buyback.json (大分類なし): 分類で絞るときは products から大分類を読み直して補い、保存し直す
+    rows = json.loads((world.dir / "buyback.json").read_text())
+    (world.dir / "buyback.json").write_text(json.dumps([{k: v for k, v in r.items() if k != "category"} for r in rows]))
+    world.caplog.clear()
+    assert world.main("--category", "家電") == 0
+    assert "大分類が無いので products から読み直す" in world.caplog.text
+    assert "target JANs: 3" in world.caplog.text
+    saved = {r["jan_code"]: r["category"] for r in json.loads((world.dir / "buyback.json").read_text())}
+    assert saved == {r["jan_code"]: r["category"] for r in rows}   # 元の分類どおりに補われて保存される
+    assert world.main() == 0 and "target JANs: 5" in world.caplog.text   # 分類なしなら従来どおり
 
 
 def test_scope_all_checks_reachable_first(world):
