@@ -13,9 +13,13 @@ export const DEFAULT_RATES = Object.freeze({
   seconds_per_check: 4.1,     // 確定判定 1 件にかかる秒数
 });
 export const DEFAULT_PARAMS = Object.freeze({
-  min_buyback: null, max_buyback: null, min_profit: 1, page_scope: 'reachable', reach_slack: 0.03, deadline: null,
+  min_buyback: null, max_buyback: null, min_profit: 1, page_scope: 'reachable', reach_slack: 0.03, deadline: null, categories: null,
 });
-const PARAM_KEYS = ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'page_scope', 'reach_slack', 'deadline'];
+// 商品の大分類 (名前と順序は arbitrage/categories.py と同じ)
+export const CATEGORY_GROUPS = Object.freeze([
+  '家電', 'スマホ・タブレット', 'パソコン・周辺機器', 'カメラ', 'ゲーム', 'オーディオ', 'ウェアラブル', 'トレカ・ホビー', 'お酒', '化粧品', 'その他',
+]);
+const PARAM_KEYS = ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'page_scope', 'reach_slack', 'deadline', 'categories'];
 const PAGE_SCOPES = ['reachable', 'all'];
 export const MIN_PROFIT_RANGE = [-5000, 100000];
 const MAX_REACH_SLACK = 0.2;
@@ -60,6 +64,33 @@ export function isValidDeadline(s) {
     && !Number.isNaN(new Date(s).getTime());
 }
 
+// ---------- 純粋関数: 商品分類 ----------
+/**
+ * 大分類の配列 → params.categories。一覧にある名前だけを一覧の順に残し、重複は捨てる。
+ * 配列でない・空・残るものが無い → null (= すべて)
+ */
+export function normalizeCategories(list) {
+  if (!Array.isArray(list)) return null;
+  const picked = CATEGORY_GROUPS.filter((g) => list.includes(g));
+  return picked.length === 0 ? null : picked;
+}
+
+/** params.categories が契約どおりか (null / 一覧の文字列だけの配列・重複なし・空でない) */
+export function categoriesError(value) {
+  if (value == null) return null;
+  if (!Array.isArray(value)) return '商品分類の形式が正しくありません';
+  if (value.length === 0) return null;   // 空配列 = すべて (契約で許す)
+  if (value.some((g) => !CATEGORY_GROUPS.includes(g))) return '商品分類に不明な名前があります';
+  if (new Set(value).size !== value.length) return '商品分類が重複しています';
+  return null;
+}
+
+/** 条件の要約に出す分類: 「分類: 家電, カメラ」/ 「分類: すべて」 */
+export function describeCategories(value) {
+  const list = normalizeCategories(value);
+  return `分類: ${list ? list.join(', ') : 'すべて'}`;
+}
+
 // ---------- 純粋関数: 依頼の params ----------
 /** 契約どおりの params か調べる。[{ path, message }] (空なら合格)。不明なキー・範囲外は拒否 */
 export function validateParams(params) {
@@ -86,12 +117,15 @@ export function validateParams(params) {
   if ((params.deadline ?? null) !== null && !isValidDeadline(params.deadline)) {
     fail('deadline', '時刻を HH:MM の形で入力するか、空欄 (上限なし) にしてください');
   }
+  const categoriesMessage = categoriesError(params.categories);
+  if (categoriesMessage) fail('categories', categoriesMessage);
   return errors;
 }
 
 /**
  * 入力欄の文字列 → { params, errors }。errors は [{ path, message }] (path は入力欄の data-field)。
- * form: { purchase_date, min_buyback, max_buyback, min_profit, page_scope, reach_slack (%), deadline_time (HH:MM) }
+ * form: { purchase_date, min_buyback, max_buyback, min_profit, page_scope, reach_slack (%), deadline_time (HH:MM),
+ *         categories (大分類名の配列。空 = すべて) }
  */
 export function buildParams(form, now = new Date()) {
   const errors = [];
@@ -115,6 +149,7 @@ export function buildParams(form, now = new Date()) {
   const params = {
     purchase_date: str(form.purchase_date), min_buyback: minBuyback, max_buyback: maxBuyback,
     min_profit: minProfit, page_scope: pageScope, reach_slack: reachSlack, deadline,
+    categories: normalizeCategories(form.categories),
   };
   // 1 つの入力欄につき最初の 1 件だけ残す
   for (const e of validateParams(params)) {
@@ -136,6 +171,7 @@ export function paramsToForm(params, purchaseDate) {
     page_scope: PAGE_SCOPES.includes(p.page_scope) ? p.page_scope : DEFAULT_PARAMS.page_scope,
     reach_slack: rateToPercent(slack),
     deadline_time: '',
+    categories: normalizeCategories(p.categories) ?? [],
   };
 }
 
@@ -146,7 +182,7 @@ export function summarizeParams(params) {
   const max = isInt(p.max_buyback) ? p.max_buyback : null;
   const range = min === null && max === null ? '買取 指定なし'
     : `買取 ${min === null ? '' : num(min)}〜${max === null ? '' : num(max)}円`;
-  const parts = [`購入 ${str(p.purchase_date) || '?'}`, range];
+  const parts = [`購入 ${str(p.purchase_date) || '?'}`, range, describeCategories(p.categories)];
   if (isInt(p.min_profit)) parts.push(`利益 ${num(p.min_profit)}円以上`);
   parts.push(p.page_scope === 'all' ? '全候補'
     : `届きそうな候補${typeof p.reach_slack === 'number' ? ` (余地 ${rateToPercent(p.reach_slack)}%)` : ''}`);
@@ -169,17 +205,10 @@ export function effectiveRates(rates) {
   };
 }
 
-/**
- * 買取価格が min〜max (両端を含む。null = 指定なし) の JAN 数。帯の途中の境界は按分する。
- * histogram: { bucket, counts: { "帯の下端": JAN 数 } }。使えない形なら null
- */
-export function countJans(histogram, minBuyback = null, maxBuyback = null) {
-  if (!isObject(histogram) || !isObject(histogram.counts)) return null;
-  const bucket = typeof histogram.bucket === 'number' && histogram.bucket > 0 ? histogram.bucket : 1000;
-  const lo = minBuyback ?? 0;
-  const hi = maxBuyback === null ? Infinity : maxBuyback + 1;   // 整数の円なので max を含む半開区間にする
+/** 1 つの counts ({ "帯の下端": JAN 数 }) のうち、買取価格が lo 以上 hi 未満の JAN 数。帯の途中の境界は按分する */
+function countInRange(counts, bucket, lo, hi) {
   let total = 0;
-  for (const [key, value] of Object.entries(histogram.counts)) {
+  for (const [key, value] of Object.entries(counts)) {
     const start = Number(key);
     const count = Number(value);
     if (!Number.isFinite(start) || !Number.isFinite(count) || count <= 0) continue;
@@ -189,15 +218,57 @@ export function countJans(histogram, minBuyback = null, maxBuyback = null) {
   return total;
 }
 
-/** 所要時間の予測。histogram が無ければ null */
-export function estimateDuration({ histogram, rates, minBuyback = null, maxBuyback = null, pageScope = 'reachable' }) {
-  const jans = countJans(histogram, minBuyback, maxBuyback);
+const histogramBucket = (histogram) =>
+  (typeof histogram.bucket === 'number' && histogram.bucket > 0 ? histogram.bucket : 1000);
+const rangeBounds = (minBuyback, maxBuyback) =>
+  [minBuyback ?? 0, maxBuyback === null ? Infinity : maxBuyback + 1];   // 整数の円なので max を含む半開区間にする
+
+/** histogram に大分類ごとの件数 (by_group) があるか (古い待ち受けの行には無い) */
+export function hasGroupCounts(histogram) {
+  return isObject(histogram) && isObject(histogram.by_group);
+}
+
+/**
+ * 買取価格が min〜max (両端を含む。null = 指定なし) の JAN 数。
+ * histogram: { bucket, counts: { "帯の下端": JAN 数 }, by_group?: { 大分類: counts } }。使えない形なら null。
+ * categories (大分類の配列) があり by_group もあれば、その大分類の合計。by_group が無ければ全体 (counts) で数える
+ */
+export function countJans(histogram, minBuyback = null, maxBuyback = null, categories = null) {
+  if (!isObject(histogram) || !isObject(histogram.counts)) return null;
+  const bucket = histogramBucket(histogram);
+  const [lo, hi] = rangeBounds(minBuyback, maxBuyback);
+  const groups = normalizeCategories(categories);
+  if (groups && hasGroupCounts(histogram)) {
+    return groups.reduce((sum, g) => sum + (isObject(histogram.by_group[g]) ? countInRange(histogram.by_group[g], bucket, lo, hi) : 0), 0);
+  }
+  return countInRange(histogram.counts, bucket, lo, hi);
+}
+
+/**
+ * 大分類ごとの JAN 数 (買取価格の範囲を反映)。{ 大分類: 件数 } (すべての大分類をキーに持つ)。
+ * by_group が無ければ null
+ */
+export function countJansByGroup(histogram, minBuyback = null, maxBuyback = null) {
+  if (!hasGroupCounts(histogram)) return null;
+  const bucket = histogramBucket(histogram);
+  const [lo, hi] = rangeBounds(minBuyback, maxBuyback);
+  return Object.fromEntries(CATEGORY_GROUPS.map((g) =>
+    [g, isObject(histogram.by_group[g]) ? countInRange(histogram.by_group[g], bucket, lo, hi) : 0]));
+}
+
+/**
+ * 所要時間の予測。histogram が無ければ null。
+ * categoriesApplied: 分類の指定を件数に反映できたか (指定なし、または by_group が無いときは false)
+ */
+export function estimateDuration({ histogram, rates, minBuyback = null, maxBuyback = null, pageScope = 'reachable', categories = null }) {
+  const jans = countJans(histogram, minBuyback, maxBuyback, categories);
   if (jans === null) return null;
   const r = effectiveRates(rates);
   const apiSeconds = (jans / r.jan_per_min) * 60;
   const checks = jans * r.candidates_per_jan * (pageScope === 'all' ? 1 : r.reachable_fraction);
   const checkSeconds = checks * r.seconds_per_check;
-  return { jans, apiSeconds, checks, checkSeconds, totalSeconds: apiSeconds + checkSeconds };
+  const categoriesApplied = normalizeCategories(categories) !== null && hasGroupCounts(histogram);
+  return { jans, apiSeconds, checks, checkSeconds, totalSeconds: apiSeconds + checkSeconds, categoriesApplied };
 }
 
 /**

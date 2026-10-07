@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import arbitrage.worker as worker_module
+from arbitrage.buyback import Buyback
+from arbitrage.categories import GROUPS
 from arbitrage.research import DEFAULT_RATES
 from arbitrage.state import lock_file
 from arbitrage.worker import (MSG_INTERRUPTED, MSG_ORPHANED, Worker, last_error_line, read_run_meta,
@@ -102,7 +104,9 @@ class Harness:
 
         def load_prices():
             self.price_loads += 1
-            return [500, 5500, 5900, 61000]
+            # 古い run 由来の None (大分類なし) は「その他」に数える
+            return [Buyback("1", 500, "rudeya", "2026-10-04", "家電"), Buyback("2", 5500, "rudeya", "2026-10-04", "家電"),
+                    Buyback("3", 5900, "rudeya", "2026-10-04", "ゲーム"), Buyback("4", 61000, "rudeya", "2026-10-04", None)]
 
         def interrupt(pid):
             self.interrupted.append(pid)
@@ -128,8 +132,11 @@ def test_startup_recovers_orphans_and_saves_histogram_and_default_rates(tmp_path
     assert h.db.requests[1]["status"] == "failed" and h.db.requests[1]["message"] == MSG_ORPHANED
     assert h.db.requests[1]["finished_at"] == T0.isoformat() and h.db.requests[2]["status"] == "completed"
     assert h.db.state["heartbeat_at"] == T0.isoformat() and h.db.state["rates"] == DEFAULT_RATES
-    assert h.db.state["buyback_histogram"] == {"bucket": 1000, "as_of": T0.isoformat(),
-                                               "counts": {"0": 1, "5000": 2, "61000": 1}}
+    histogram = h.db.state["buyback_histogram"]
+    assert histogram == {"bucket": 1000, "as_of": T0.isoformat(), "counts": {"0": 1, "5000": 2, "61000": 1},
+                         "by_group": {**{g: {} for g in GROUPS}, "家電": {"0": 1, "5000": 1}, "ゲーム": {"5000": 1},
+                                      "その他": {"61000": 1}}}
+    assert list(histogram["by_group"]) == list(GROUPS)
     assert h.spawned == []
 
 

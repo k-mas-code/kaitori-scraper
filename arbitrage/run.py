@@ -18,9 +18,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
-from .buyback import Buyback, load_buyback_prices
+from .buyback import Buyback, load_buyback_prices, load_categories, read_credentials
+from .categories import GROUP_OTHER, GROUPS
 from . import db
 from .config import (ROOT, CampaignConfig, ConfigError, Settings, active_config, load_settings_file,
                      parse_settings, TARGET_PAGE)
@@ -52,6 +53,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="絞り込みで見込むクーポン値引きの余地 (0.2 = 20%%)")
     p.add_argument("--min-buyback", type=int, default=None, help="買取価格がこの金額 (円) 以上の JAN だけを対象にする")
     p.add_argument("--max-buyback", type=int, default=None, help="買取価格がこの金額 (円) 以下の JAN だけを対象にする")
+    p.add_argument("--category", action="append", choices=GROUPS, default=None, metavar="NAME",
+                   help=f"この大分類の JAN だけを対象にする (繰り返し可)。{' / '.join(GROUPS)}")
     p.add_argument("--limit", type=int, default=None,
                    help="対象 JAN を N 件に絞る (試行用)。買取価格の高い順に並べ、全体から均等な間隔で N 件を選ぶ")
     p.add_argument("--date", type=date.fromisoformat, default=None,
@@ -94,11 +97,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def select_targets(buyback, min_price: int | None, max_price: int | None, limit: int | None) -> list[Buyback]:
-    """対象 JAN を買取価格の高い順に並べる。limit があれば、価格帯が偏らないよう均等な間隔で選ぶ"""
+def select_targets(buyback, min_price: int | None, max_price: int | None, limit: int | None,
+                   categories=None) -> list[Buyback]:
+    """対象 JAN を買取価格の高い順に並べる。limit があれば、価格帯が偏らないよう均等な間隔で選ぶ。
+
+    categories (大分類名の列) があればその分類だけ。大分類が無い JAN (古い run の buyback.json) は対象から外す
+    """
+    wanted = set(categories or ())
     targets = sorted(
         (b for b in buyback
-         if (min_price is None or b.price >= min_price) and (max_price is None or b.price <= max_price)),
+         if (min_price is None or b.price >= min_price) and (max_price is None or b.price <= max_price)
+         and (not wanted or b.category in wanted)),
         key=lambda b: (-b.price, b.jan_code))
     if limit and len(targets) > limit:
         targets = [targets[i * len(targets) // limit] for i in range(limit)]
@@ -272,6 +281,7 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
                   + "".join(f" {flag} {value}" for flag, value in (
                       ("--min-buyback", args.min_buyback), ("--max-buyback", args.max_buyback),
                       ("--limit", args.limit)) if value is not None)
+                  + "".join(f" --category {c}" for c in args.category or ())
                   + (f" --min-profit {args.min_profit}" if args.min_profit != 1 else "")
                   + (f" --page-scope {args.page_scope}" if args.page_scope != SCOPE_REACHABLE else "")
                   + (f" --reach-slack {args.reach_slack}" if args.reach_slack != DEFAULT_REACH_SLACK else "")
@@ -292,7 +302,14 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
     else:
         buyback = {row["jan_code"]: Buyback(**row) for row in saved}
         logger.info("buyback prices: %d JANs (run %s の開始時点の保存分)", len(buyback), run_name)
-    targets = select_targets(buyback.values(), args.min_buyback, args.max_buyback, args.limit)
+    if args.category and any(b.category is None for b in buyback.values()):
+        # 大分類が付く前に始まった run の保存分。分類は価格と違って「開始時点」に固定する必要が無いので、いま読んで補う
+        logger.info("run %s の買取価格に大分類が無いので products から読み直す", run_name)
+        groups = load_categories(*read_credentials())
+        buyback = {jan: replace(b, category=groups.get(jan, GROUP_OTHER)) if b.category is None else b
+                   for jan, b in buyback.items()}
+        state.save_buyback([asdict(b) for b in buyback.values()])
+    targets = select_targets(buyback.values(), args.min_buyback, args.max_buyback, args.limit, args.category)
 
     done = {r["jan_code"]: r for r in state.load_api_records()}
     target_jans = {b.jan_code for b in targets}

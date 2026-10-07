@@ -4,10 +4,11 @@
 // DOM に依存しない純粋関数は arbitrage-research-calc.js にあり、ここは画面だけを持つ。
 import { isValidDate } from './arbitrage-settings.js';
 import {
-  ACTIVE_STATUSES, MIN_PROFIT_RANGE, STAGE_LABELS, STATUS_LABELS,
-  activeOnDate, buildParams, canShowResults, checkDeadline, describeCoupon, describePoint, describeStoreUpsell, estimateDuration,
-  formatDateTime, formatDuration, hasNewlyFinished, isActiveStatus, isInt, isMissingTableError, isObject,
-  isWorkerAlive, num, paramsToForm, progressPercent, purchaseDateToApply, str, summarizeParams, todayIso,
+  ACTIVE_STATUSES, CATEGORY_GROUPS, MIN_PROFIT_RANGE, STAGE_LABELS, STATUS_LABELS,
+  activeOnDate, buildParams, canShowResults, checkDeadline, countJansByGroup, describeCoupon, describePoint,
+  describeStoreUpsell, estimateDuration, formatDateTime, formatDuration, hasGroupCounts, hasNewlyFinished,
+  isActiveStatus, isInt, isMissingTableError, isObject, isWorkerAlive, num, paramsToForm, progressPercent,
+  purchaseDateToApply, str, summarizeParams, todayIso,
 } from './arbitrage-research-calc.js';
 
 const POLL_ACTIVE_MS = 15000;   // 有効な依頼がある間
@@ -104,8 +105,16 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       h('span', { class: 'text-slate-700' }, label));
   }
 
+  function categoryBox(group) {
+    return h('label', { class: 'flex items-center gap-2 text-sm' },
+      h('input', { type: 'checkbox', value: group, class: 'h-4 w-4', dataset: { field: 'categories' } }),
+      h('span', { class: 'text-slate-700' }, group),
+      h('span', { class: 'text-xs text-slate-400', dataset: { groupCount: group } }));
+  }
+
   function buildForm(form) {
     const region = (name, cls = '') => h('div', { class: cls, dataset: { region: name } });
+    const link = (action, label) => h('button', { type: 'button', class: 'text-xs text-blue-600 hover:underline', dataset: { action } }, label);
     const $form = card('条件',
       h('div', { class: 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4 mt-3' },
         field('購入予定日', 'purchase_date', { type: 'date' }, '変更して実行すると、設定の購入予定日も同じ日付になります。'),
@@ -113,6 +122,14 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
         field('対象の買取金額 上限 (円)', 'max_buyback', { inputmode: 'numeric', placeholder: '指定なし' }),
         field('載せる利益の下限 (円)', 'min_profit', { type: 'number', step: '1', min: String(MIN_PROFIT_RANGE[0]), max: String(MIN_PROFIT_RANGE[1]) },
           '1 = 黒字のみ。-1000 なら 1,000 円までの赤字も載せる')),
+      h('fieldset', { class: 'mt-4' },
+        h('div', { class: 'flex flex-wrap items-center gap-3' },
+          h('legend', { class: 'text-sm text-slate-500' }, '商品分類'),
+          link('categories-all', 'すべて選択'),
+          link('categories-none', '解除')),
+        h('div', { class: 'mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-4' }, CATEGORY_GROUPS.map(categoryBox)),
+        h('span', { class: 'block text-xs text-slate-400 mt-1', dataset: { region: 'categories-help' } }),
+        h('span', { class: 'hidden text-xs text-red-600 mt-1', dataset: { error: 'categories' } })),
       h('div', { class: 'mt-4 border border-slate-200 rounded-lg p-3' },
         h('div', { class: 'flex flex-wrap items-center gap-2' },
           h('span', { class: 'text-sm font-semibold text-slate-600' }, 'この日に使われるポイント・クーポン'),
@@ -145,18 +162,24 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     ui = {
       run: $run, runMessage: $runMessage,
       active: $region('active'), estimate: $region('estimate'), worker: $region('worker'),
-      current: $region('current'), history: $region('history'),
+      current: $region('current'), history: $region('history'), categoriesHelp: $region('categories-help'),
     };
     writeForm(form);
   }
 
   const $field = (name) => $body.querySelector(`[data-field="${name}"]`);
+  const $categoryBoxes = () => [...$body.querySelectorAll('[data-field="categories"]')];
 
   function writeForm(form) {
     for (const name of ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'reach_slack']) $field(name).value = form[name];
     $field('deadline').value = form.deadline_time;
     for (const $radio of $body.querySelectorAll('[data-field="page_scope"]')) $radio.checked = $radio.value === form.page_scope;
+    setCategories(Array.isArray(form.categories) ? form.categories : []);
     syncScope();
+  }
+
+  function setCategories(list) {
+    for (const $box of $categoryBoxes()) $box.checked = list.includes($box.value);
   }
 
   function readForm() {
@@ -165,7 +188,20 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       purchase_date: value('purchase_date'), min_buyback: value('min_buyback'), max_buyback: value('max_buyback'),
       min_profit: value('min_profit'), reach_slack: value('reach_slack'), deadline_time: value('deadline'),
       page_scope: $body.querySelector('[data-field="page_scope"]:checked')?.value ?? '',
+      categories: $categoryBoxes().filter(($box) => $box.checked).map(($box) => $box.value),
     };
+  }
+
+  /** 各分類のラベル横に JAN 数 (買取金額の範囲を反映) を出す。by_group が無い待ち受けなら案内を出す */
+  function renderCategoryCounts(params) {
+    const histogram = state.worker?.buyback_histogram;
+    const valid = (v) => (isInt(v) && v >= 0 ? v : null);
+    const counts = countJansByGroup(histogram, valid(params.min_buyback), valid(params.max_buyback));
+    for (const $count of $body.querySelectorAll('[data-group-count]')) {
+      $count.textContent = counts ? `(${num(Math.round(counts[$count.dataset.groupCount] ?? 0))})` : '';
+    }
+    ui.categoriesHelp.textContent = isObject(histogram) && !hasGroupCounts(histogram)
+      ? '分類ごとの件数は待ち受けを起動し直すと出ます' : '未選択 = すべての分類が対象';
   }
 
   // 範囲が「全候補」のとき、余地は使わないので無効化する
@@ -180,7 +216,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       $error.textContent = message ?? '';
       $error.classList.toggle('hidden', !message);
       const $input = $field($error.dataset.error);
-      if ($input && $input.type !== 'radio') {
+      if ($input && $input.type !== 'radio' && $input.type !== 'checkbox') {
         $input.classList.toggle('border-red-500', Boolean(message));
         $input.classList.toggle('border-slate-300', !message);
         if (message) $input.setAttribute('aria-invalid', 'true'); else $input.removeAttribute('aria-invalid');
@@ -232,8 +268,9 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     const estimate = estimateDuration({
       histogram: state.worker?.buyback_histogram, rates: state.worker?.rates,
       minBuyback: valid(params.min_buyback), maxBuyback: valid(params.max_buyback), pageScope: params.page_scope,
+      categories: params.categories,
     });
-    return { estimate, deadline: params.deadline };
+    return { estimate, deadline: params.deadline, params };
   }
 
   function stat(label, value, sub = null) {
@@ -245,7 +282,8 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
 
   function renderEstimate() {
     const now = new Date();
-    const { estimate, deadline } = currentEstimate(readForm(), now);
+    const { estimate, deadline, params } = currentEstimate(readForm(), now);
+    renderCategoryCounts(params);
     if (!estimate) {
       ui.estimate.replaceChildren(
         h('div', { class: 'grid gap-3 grid-cols-2 lg:grid-cols-5' },
@@ -260,7 +298,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     if (check.level === 'api') {
       $warning = h('p', { class: 'mt-3 text-sm bg-red-50 border border-red-200 text-red-700 rounded-lg p-3', role: 'alert' },
         `終了時刻の上限 (${deadlineText}) までに API 段階が終わらない見込みです。確定判定に進めず、結果がほとんど残りません。`
-        + '買取金額の範囲を狭めるか、終了時刻を遅くしてください。');
+        + '買取金額の範囲や商品分類を絞るか、終了時刻を遅くしてください。');
     } else if (check.level === 'pages') {
       $warning = h('p', { class: 'mt-3 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3', role: 'alert' },
         `終了時刻の上限 (${deadlineText}) が完了予定より早いため、確定判定の途中で打ち切られます`
@@ -268,9 +306,11 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
         + '見込みの高い順に確認するので、上位の候補は残ります。');
     }
     const asOf = formatDateTime(state.worker?.buyback_histogram?.as_of);
+    const filtered = params.categories !== null;
+    const jansSub = !filtered ? null : (estimate.categoriesApplied ? '選んだ分類のみ' : '全分類の件数 (分類ごとの件数は待ち受けを起動し直すと出ます)');
     ui.estimate.replaceChildren(
       h('div', { class: 'grid gap-3 grid-cols-2 lg:grid-cols-5' },
-        stat('対象 JAN 数', `約 ${num(Math.round(estimate.jans))} 件`),
+        stat('対象 JAN 数', `約 ${num(Math.round(estimate.jans))} 件`, jansSub),
         stat('API 段階', formatDuration(estimate.apiSeconds)),
         stat('確定判定', formatDuration(estimate.checkSeconds), `約 ${num(Math.round(estimate.checks))} 件`),
         stat('合計', formatDuration(estimate.totalSeconds)),
@@ -590,6 +630,9 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       return;
     } else if (action === 'edit-settings') {
       onEditSettings?.();
+    } else if (action === 'categories-all' || action === 'categories-none') {
+      setCategories(action === 'categories-all' ? [...CATEGORY_GROUPS] : []);
+      renderEstimate();
     } else if (action === 'run') {
       run();
     } else if (action === 'cancel') {
