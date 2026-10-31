@@ -5,7 +5,7 @@ import { createStores } from './arbitrage-stores.js';
 
 const SOURCE_LABELS = { kaitorishouten: '買取商店', rudeya: '買取ルデヤ', kaitoriwiki: '買取wiki' };
 const PAGE_SIZE = 1000;   // PostgREST の 1 リクエストあたりの上限
-const RESULT_COLUMNS = 'id,jan_code,item_name,category,store_id,store_name,item_url,sale_price,coupon,' +
+const RESULT_COLUMNS = 'id,jan_code,item_name,category,store_id,store_name,item_url,sale_price,premium_price,coupon,' +
   'coupon_discount,points,points_total,capped_campaigns,effective_price,buyback_price,buyback_source,' +
   'buyback_date,profit,profit_rate,checked_at';
 
@@ -332,6 +332,7 @@ function detailHtml(r) {
             </div>
             <div class="text-xs text-slate-500">
               実質 ${yen(r.effective_price)} ＝ 販売 ${yen(r.sale_price)} − クーポン ${yen(r.coupon_discount)} − ポイント ${number(r.points_total)}<br>
+              ${r.premium_price ? `LYPプレミアム会員限定価格 ${yen(r.premium_price)}（通常より ${yen(r.sale_price - r.premium_price)} 安い。参考表示で計算には含めない）<br>` : ''}
               買取 ${yen(r.buyback_price)}（${escapeHtml(SOURCE_LABELS[r.buyback_source] || r.buyback_source)}、${escapeHtml(r.buyback_date || '')} 時点）<br>
               JAN ${escapeHtml(r.jan_code)} ／ ${escapeHtml(r.category || 'カテゴリ不明')} ／ 確認 ${formatDateTime(r.checked_at)}
             </div>

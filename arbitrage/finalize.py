@@ -102,6 +102,7 @@ def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignCon
         "item_code": candidate["item_code"],
         "item_url": candidate["item_url"],
         "sale_price": page.price,
+        "premium_price": page.premium_price,   # LYP 会員限定価格 (参考。計算には使わない)
         "coupon": used_coupon,
         "coupon_discount": used_discount,
         "points": best["points"],

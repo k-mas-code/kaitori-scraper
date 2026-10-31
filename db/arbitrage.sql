@@ -76,6 +76,7 @@ create table if not exists arbitrage_results (
   item_code          text not null,                   -- Yahoo!ショッピングの商品コード (店舗内で一意)
   item_url           text not null,
   sale_price         int not null,                    -- 販売価格 (税込)
+  premium_price      int,                             -- LYPプレミアム会員限定価格 (税込、参考表示のみ。無ければ null)
   coupon             jsonb,                           -- 適用したクーポン (種別・値・条件・期限・URL)。無ければ null
   coupon_discount    int not null default 0,          -- クーポン値引き額 (円)
   points             jsonb not null,                  -- ポイント内訳 [{name, rate, points, cap, capped}, ...]
@@ -91,6 +92,9 @@ create table if not exists arbitrage_results (
   -- 再開時は同じ run_id に upsert する (on_conflict="run_id,store_id,item_code")
   unique (run_id, store_id, item_code)
 );
+
+-- 2026-11-01 追加 (既存テーブル用。再実行可)
+alter table arbitrage_results add column if not exists premium_price int;
 
 create index if not exists idx_arbitrage_results_run_rate
   on arbitrage_results (run_id, profit_rate desc);
