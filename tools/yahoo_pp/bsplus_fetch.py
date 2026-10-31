@@ -16,8 +16,9 @@ import json
 import logging
 import re
 import sys
+from pathlib import Path
 
-from .common import ROOT, Fetcher, RateLimited
+from .common import ROOT, Fetcher, RateLimited, check_stop
 
 OUT = ROOT / "data" / "yahoo_pp"
 LIST_URL = "https://shopping.yahoo.co.jp/promotion/campaign/bsplus/list/"
@@ -87,53 +88,74 @@ def api_stores(f: Fetcher, eid: str, cat: str) -> dict[str, str]:
     return stores
 
 
-def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    today = dt.date.today()
-    f = Fetcher()
-    OUT.mkdir(parents=True, exist_ok=True)
-    try:
-        dates = list_dates(f, today)
-        log.info("日付 %d 件: %s 〜 %s", len(dates), dates[0][0], dates[-1][0])
-        sched: dict[str, list] = {}
-        names: dict[str, str] = {}
-        cats: dict[str, set[str]] = {}
-        counts: dict[str, dict] = {}
-        mismatch = 0
-        for i, (day, a, b) in enumerate(dates):
-            sections = event_sections(f, a, b)
-            counts[day.isoformat()] = {}
-            for eid, (tier, shown) in sections.items():
-                counts[day.isoformat()][eid] = {}
-                for cat in CATEGORIES:
-                    stores = api_stores(f, eid, cat)
-                    exp = shown.get(cat)
-                    counts[day.isoformat()][eid][cat] = [len(stores), exp]
-                    if exp is not None and exp != len(stores):
-                        mismatch += 1
-                        log.warning("%s +%s%% %s: 取得 %d 件 / 表示 %d 件", day, tier, CATEGORIES[cat], len(stores), exp)
-                    for sid, name in stores.items():
-                        names.setdefault(sid, name)
-                        cats.setdefault(sid, set()).add(cat)
-                        pat = sched.setdefault(sid, [cat, ["-"] * len(dates)])[1]
-                        if pat[i] != "-" and pat[i] != tier:
-                            log.warning("%s %s: 同じ日に +%s と +%s", day, sid, pat[i], tier)
-                        pat[i] = tier
-            log.info("%s 完了 (%d/%d, 店舗 %d, リクエスト %d)", day, i + 1, len(dates), len(sched), f.requests_made)
-    except RateLimited as e:
-        log.error("HTTP 489 (アクセス制限): %s。時間をおいて再実行すると続きから (キャッシュ済みは飛ばす)", e)
-        return 1
+STAGE = "fetch"
+
+
+def fetch_schedule(f: Fetcher, today: dt.date, on_progress=None, should_stop=None) -> dict:
+    """日付 × 枠 × ジャンルを巡回して {dates, sched, names, counts, mismatch} を返す。
+
+    on_progress(stage, done, total) は日付 1 つ終わるごとに呼ぶ。should_stop() が True なら Cancelled。
+    RateLimited (HTTP 489) はそのまま投げる。
+    """
+    dates = list_dates(f, today)
+    log.info("日付 %d 件: %s 〜 %s", len(dates), dates[0][0], dates[-1][0])
+    if on_progress:
+        on_progress(STAGE, 0, len(dates))
+    sched: dict[str, list] = {}
+    names: dict[str, str] = {}
+    cats: dict[str, set[str]] = {}
+    counts: dict[str, dict] = {}
+    mismatch = 0
+    for i, (day, a, b) in enumerate(dates):
+        check_stop(should_stop)
+        sections = event_sections(f, a, b)
+        counts[day.isoformat()] = {}
+        for eid, (tier, shown) in sections.items():
+            counts[day.isoformat()][eid] = {}
+            for cat in CATEGORIES:
+                stores = api_stores(f, eid, cat)
+                exp = shown.get(cat)
+                counts[day.isoformat()][eid][cat] = [len(stores), exp]
+                if exp is not None and exp != len(stores):
+                    mismatch += 1
+                    log.warning("%s +%s%% %s: 取得 %d 件 / 表示 %d 件", day, tier, CATEGORIES[cat], len(stores), exp)
+                for sid, name in stores.items():
+                    names.setdefault(sid, name)
+                    cats.setdefault(sid, set()).add(cat)
+                    pat = sched.setdefault(sid, [cat, ["-"] * len(dates)])[1]
+                    if pat[i] != "-" and pat[i] != tier:
+                        log.warning("%s %s: 同じ日に +%s と +%s", day, sid, pat[i], tier)
+                    pat[i] = tier
+        log.info("%s 完了 (%d/%d, 店舗 %d, リクエスト %d)", day, i + 1, len(dates), len(sched), f.requests_made)
+        if on_progress:
+            on_progress(STAGE, i + 1, len(dates))
     multi = {s: sorted(c) for s, c in cats.items() if len(c) > 1}
     if multi:
         log.warning("複数ジャンルに出た店 %d 件 (最初に出たジャンルを採用): %s", len(multi), list(multi.items())[:5])
-    (OUT / "dates.json").write_text(json.dumps([d.isoformat() for d, _, _ in dates]), encoding="utf-8")
-    (OUT / "sched.json").write_text(json.dumps({s: [c, "".join(p)] for s, (c, p) in sched.items()},
-                                               ensure_ascii=False, indent=0), encoding="utf-8")
-    (OUT / "names.json").write_text(json.dumps(names, ensure_ascii=False, indent=0), encoding="utf-8")
-    (OUT / "counts.json").write_text(json.dumps(counts, indent=1), encoding="utf-8")
+    return {"dates": [d for d, _, _ in dates], "sched": {s: [c, "".join(p)] for s, (c, p) in sched.items()},
+            "names": names, "counts": counts, "mismatch": mismatch}
+
+
+def write_schedule(result: dict, out: Path = OUT) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dates.json").write_text(json.dumps([d.isoformat() for d in result["dates"]]), encoding="utf-8")
+    (out / "sched.json").write_text(json.dumps(result["sched"], ensure_ascii=False, indent=0), encoding="utf-8")
+    (out / "names.json").write_text(json.dumps(result["names"], ensure_ascii=False, indent=0), encoding="utf-8")
+    (out / "counts.json").write_text(json.dumps(result["counts"], indent=1), encoding="utf-8")
+    sched = result["sched"]
     by_cat = {c: sum(1 for v in sched.values() if v[0] == c) for c in CATEGORIES}
     log.info("店舗 %d 件 (%s)。件数不一致 %d。出力: %s", len(sched),
-             ", ".join(f"{CATEGORIES[c]} {n}" for c, n in by_cat.items()), mismatch, OUT)
+             ", ".join(f"{CATEGORIES[c]} {n}" for c, n in by_cat.items()), result["mismatch"], out)
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        result = fetch_schedule(Fetcher(), dt.date.today())
+    except RateLimited as e:
+        log.error("HTTP 489 (アクセス制限): %s。時間をおいて再実行すると続きから (キャッシュ済みは飛ばす)", e)
+        return 1
+    write_schedule(result)
     return 0
 
 

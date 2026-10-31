@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-from .common import ROOT, Fetcher, RateLimited
+from .common import ROOT, Cancelled, Fetcher, RateLimited, check_stop
 
 OUT = ROOT / "data" / "yahoo_pp"
 BASE_RATIO = 4.0            # PayPay残高 0.5 + ストアポイント 1 + LINE 連携 2.5
@@ -28,13 +28,13 @@ MAX_PRODUCT_PAGES = 3       # 上乗せ確認に開く商品ページの上限 (
 log = logging.getLogger(__name__)
 
 
-def load(name: str) -> dict:
-    p = OUT / name
+def load(name: str, out: Path = OUT) -> dict:
+    p = out / name
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
-def save(name: str, data: dict) -> None:
-    (OUT / name).write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+def save(name: str, data: dict, out: Path = OUT) -> None:
+    (out / name).write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
 
 
 def next_data(text: str) -> dict | None:
@@ -155,62 +155,105 @@ def survey_points(f: Fetcher, sid: str) -> tuple[int | None, dict | None]:
     }
 
 
+STAGE_INVOICE, STAGE_POINTS, STAGE_RATING = "invoice", "points", "rating"
+STAGES = ("invoice", "rating", "points", "all")
+
+
+def warn_if_bad_day(today: dt.date) -> bool:
+    """上乗せ調査に日曜特典が混ざりうる日 (日曜・5 のつく日) なら warning を出して True"""
+    if today.weekday() == 6 or today.day % 10 == 5:
+        log.warning("今日 (%s) は日曜または 5 のつく日。上乗せの判定に日曜特典が混ざりうる (HANDOFF §3-5)", today)
+        return True
+    return False
+
+
+def run_enrich(stage: str = "all", limit: int = 0, out: Path = OUT, f: Fetcher | None = None,
+               on_progress=None, should_stop=None, today: dt.date | None = None) -> None:
+    """sched.json の店ごとに適格請求書・上乗せ/優良・評価を取得して out に書く (取得済みは飛ばす)。
+
+    on_progress(stage, done, total) は店 1 件ごと、should_stop() は店 1 件の区切りで見る (True なら Cancelled)。
+    RateLimited / Cancelled はそれまでの結果を保存してから投げる。sched.json が無ければ FileNotFoundError。
+    """
+    sched = load("sched.json", out)
+    if not sched:
+        raise FileNotFoundError(f"{out / 'sched.json'} が無い。先に bsplus_fetch を実行する")
+    ids = sorted(sched)
+    f = f or Fetcher()
+    invoice, reviews = load("invoice.json", out), load("reviews.json", out)
+    gold, points = load("gold.json", out), load("points.json", out)
+    if stage in ("points", "all"):
+        warn_if_bad_day(today or dt.date.today())
+
+    def save_all() -> None:
+        for name, d in (("invoice.json", invoice), ("points.json", points), ("gold.json", gold), ("reviews.json", reviews)):
+            save(name, d, out)
+
+    def loop(name: str, todo: list[str], step) -> None:
+        if on_progress:
+            on_progress(name, 0, len(todo))
+        for i, sid in enumerate(todo, 1):
+            check_stop(should_stop)
+            step(sid)
+            if i % 20 == 0 or i == len(todo):
+                save_all()
+            if on_progress:
+                on_progress(name, i, len(todo))
+
+    try:
+        if stage in ("invoice", "all"):
+            todo = [s for s in ids if s not in invoice][: limit or None]
+            log.info("適格請求書: 未取得 %d / %d 店 (約 %.0f 分)", len(todo), len(ids), len(todo) * f.interval / 60)
+
+            def do_invoice(sid: str) -> None:
+                invoice[sid] = fetch_invoice(f, sid)
+                if len(invoice) % 20 == 0:
+                    log.info("適格請求書 %d/%d (Y=%d N=%d ?=%d)", len(invoice), len(ids),
+                             *[sum(1 for v in invoice.values() if v["f"] == k) for k in "YN?"])
+            loop(STAGE_INVOICE, todo, do_invoice)
+        qualified = [s for s in ids if invoice.get(s, {}).get("f") == "Y"]
+        if stage in ("points", "all"):
+            todo = [s for s in qualified if s not in points][: limit or None]
+            log.info("上乗せ・優良: 未取得 %d / %d 店 (最大約 %.0f 分)", len(todo), len(qualified),
+                     len(todo) * (1 + MAX_PRODUCT_PAGES) * f.interval / 60)
+
+            def do_points(sid: str) -> None:
+                g, p = survey_points(f, sid)
+                points[sid] = p or {"max": 0.0, "n": 0, "n_up": 0, "unknown": 0, "detail": {}, "checked": [],
+                                    "error": "商品が取れない"}
+                if g is not None:
+                    gold[sid] = g
+                if len(points) % 20 == 0:
+                    log.info("上乗せ・優良 %d/%d (上乗せあり %d, 優良 %d, リクエスト %d)", len(points), len(qualified),
+                             sum(1 for v in points.values() if v["max"] > 0), sum(gold.values()), f.requests_made)
+            loop(STAGE_POINTS, todo, do_points)
+        if stage in ("rating", "all"):
+            todo = [s for s in qualified if s not in reviews][: limit or None]
+            log.info("ストア評価: 未取得 %d / %d 店 (約 %.0f 分)", len(todo), len(qualified), len(todo) * f.interval / 60)
+
+            def do_rating(sid: str) -> None:
+                r = fetch_reviews(f, sid)
+                reviews[sid] = r if r is not None else [0, 0, 0, 0, 0]
+            loop(STAGE_RATING, todo, do_rating)
+    except (RateLimited, Cancelled):
+        save_all()
+        raise
+    log.info("完了 (リクエスト %d)", f.requests_made)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", choices=["invoice", "rating", "points", "all"], default="all")
+    ap.add_argument("--stage", choices=STAGES, default="all")
     ap.add_argument("--limit", type=int, default=0, help="各段階で処理する店数の上限 (試行用)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    sched = load("sched.json")
-    if not sched:
-        log.error("sched.json が無い。先に bsplus_fetch を実行する")
-        return 1
-    ids = sorted(sched)
-    f = Fetcher()
-    invoice, reviews, gold, points = load("invoice.json"), load("reviews.json"), load("gold.json"), load("points.json")
-    today = dt.date.today()
-    if args.stage in ("points", "all") and (today.weekday() == 6 or today.day % 10 == 5):
-        log.warning("今日 (%s) は日曜または 5 のつく日。上乗せの判定に日曜特典が混ざりうる (HANDOFF §3-5)", today)
     try:
-        if args.stage in ("invoice", "all"):
-            todo = [s for s in ids if s not in invoice][: args.limit or None]
-            log.info("適格請求書: 未取得 %d / %d 店 (約 %.0f 分)", len(todo), len(ids), len(todo) * f.interval / 60)
-            for i, sid in enumerate(todo, 1):
-                invoice[sid] = fetch_invoice(f, sid)
-                if i % 20 == 0 or i == len(todo):
-                    save("invoice.json", invoice)
-                    log.info("適格請求書 %d/%d (Y=%d N=%d ?=%d)", i, len(todo),
-                             *[sum(1 for v in invoice.values() if v["f"] == k) for k in "YN?"])
-        qualified = [s for s in ids if invoice.get(s, {}).get("f") == "Y"]
-        if args.stage in ("points", "all"):
-            todo = [s for s in qualified if s not in points][: args.limit or None]
-            log.info("上乗せ・優良: 未取得 %d / %d 店 (最大約 %.0f 分)", len(todo), len(qualified),
-                     len(todo) * (1 + MAX_PRODUCT_PAGES) * f.interval / 60)
-            for i, sid in enumerate(todo, 1):
-                g, p = survey_points(f, sid)
-                points[sid] = p or {"max": 0.0, "n": 0, "n_up": 0, "unknown": 0, "detail": {}, "checked": [], "error": "商品が取れない"}
-                if g is not None:
-                    gold[sid] = g
-                if i % 20 == 0 or i == len(todo):
-                    save("points.json", points)
-                    save("gold.json", gold)
-                    log.info("上乗せ・優良 %d/%d (上乗せあり %d, 優良 %d, リクエスト %d)", i, len(todo),
-                             sum(1 for v in points.values() if v["max"] > 0), sum(gold.values()), f.requests_made)
-        if args.stage in ("rating", "all"):
-            todo = [s for s in qualified if s not in reviews][: args.limit or None]
-            log.info("ストア評価: 未取得 %d / %d 店 (約 %.0f 分)", len(todo), len(qualified), len(todo) * f.interval / 60)
-            for i, sid in enumerate(todo, 1):
-                r = fetch_reviews(f, sid)
-                reviews[sid] = r if r is not None else [0, 0, 0, 0, 0]
-                if i % 20 == 0 or i == len(todo):
-                    save("reviews.json", reviews)
-                    log.info("ストア評価 %d/%d", i, len(todo))
+        run_enrich(args.stage, args.limit)
+    except FileNotFoundError as e:
+        log.error("%s", e)
+        return 1
     except RateLimited as e:
-        for name, d in (("invoice.json", invoice), ("points.json", points), ("gold.json", gold), ("reviews.json", reviews)):
-            save(name, d)
         log.error("HTTP 489 (アクセス制限): %s。時間をおいて再実行すると続きから", e)
         return 1
-    log.info("完了 (リクエスト %d)", f.requests_made)
     return 0
 
 

@@ -62,9 +62,15 @@ center = Alignment(horizontal="center", vertical="center")
 head_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
-def load(name: str) -> dict:
-    p = IN / name
+def load(name: str, in_dir: Path = IN) -> dict:
+    p = in_dir / name
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def load_inputs(in_dir: Path = IN) -> dict:
+    """dates.json 〜 points.json をまとめて読む (snapshot / build が同じ入力を使う)"""
+    return {name: load(f"{name}.json", in_dir)
+            for name in ("dates", "sched", "names", "invoice", "gold", "reviews", "points")}
 
 
 def parse_days(spec: str | None, dates: list[dt.date]) -> set[dt.date]:
@@ -95,24 +101,20 @@ def pattern_type(pat: str, off: set[int]) -> str:
     return "不定期"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    ap.add_argument("--plus2", help="全体加算 +2% の日 (M/D をカンマ区切り)")
-    ap.add_argument("--plus3", help="全体加算 +3% (優良ストア) の日")
-    ap.add_argument("--today", help="作成日 (YYYY-MM-DD。既定は今日)")
-    args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+def build(out: Path, today: dt.date, inputs: dict, plus2_spec: str | None = None,
+          plus3_spec: str | None = None) -> dict:
+    """inputs (load_inputs の形) から xlsx を out に書き、件数 {all, qualified, excluded, surveyed, gold, rated} を返す。
 
-    dates = [dt.date.fromisoformat(s) for s in load("dates.json")]
-    sched = load("sched.json")
-    names, inv, gold, rev, pts = load("names.json"), load("invoice.json"), load("gold.json"), load("reviews.json"), load("points.json")
+    dates / sched が無ければ FileNotFoundError。
+    """
+    dates = [dt.date.fromisoformat(s) for s in inputs["dates"]]
+    sched = inputs["sched"]
+    names, inv, gold, rev, pts = (inputs["names"], inputs["invoice"], inputs["gold"], inputs["reviews"],
+                                  inputs["points"])
     if not dates or not sched:
-        log.error("dates.json / sched.json が無い。先に bsplus_fetch を実行する")
-        return 1
+        raise FileNotFoundError("dates.json / sched.json が無い。先に bsplus_fetch を実行する")
     n_days = len(dates)
-    today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
-    plus2, plus3 = parse_days(args.plus2, dates), parse_days(args.plus3, dates)
+    plus2, plus3 = parse_days(plus2_spec, dates), parse_days(plus3_spec, dates)
     span = f"{dates[0].month}/{dates[0].day}〜{dates[-1].month}/{dates[-1].day}"
 
     # 休み日: 最頻パターンの不参加日 (参加店が十分多いときだけ)
@@ -322,10 +324,30 @@ def main() -> int:
     for j, text in enumerate(notes, start=tot + 1):
         cell = summ.cell(row=j, column=1, value=text)
         cell.font = Font(name=FONT, size=10, bold=True) if text in ("このリストの意味",) else f_base
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(args.out)
-    log.info("書き出し: %s (全 %d 店 → 適格 %d / 非適格 %d、上乗せ調査 %d、優良 %d、評価 %d)", args.out, all_n, len(recs),
-             len(excl), sum(1 for r in recs if r["id"] in pts), sum(1 for r in recs if r["gold"]), sum(1 for r in recs if r["id"] in rev))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out)
+    stats = {"all": all_n, "qualified": len(recs), "excluded": len(excl),
+             "surveyed": sum(1 for r in recs if r["id"] in pts), "gold": sum(1 for r in recs if r["gold"]),
+             "rated": sum(1 for r in recs if r["id"] in rev)}
+    log.info("書き出し: %s (全 %d 店 → 適格 %d / 非適格 %d、上乗せ調査 %d、優良 %d、評価 %d)", out, all_n,
+             stats["qualified"], stats["excluded"], stats["surveyed"], stats["gold"], stats["rated"])
+    return stats
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--plus2", help="全体加算 +2% の日 (M/D をカンマ区切り)")
+    ap.add_argument("--plus3", help="全体加算 +3% (優良ストア) の日")
+    ap.add_argument("--today", help="作成日 (YYYY-MM-DD。既定は今日)")
+    args = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
+    try:
+        build(args.out, today, load_inputs(), args.plus2, args.plus3)
+    except FileNotFoundError as e:
+        log.error("%s", e)
+        return 1
     return 0
 
 

@@ -17,6 +17,9 @@ from .scope import DEFAULT_REACH_SLACK, MAX_REACH_SLACK, PAGE_SCOPES, SCOPE_REAC
 
 PARAM_KEYS = {"purchase_date", "min_buyback", "max_buyback", "min_profit", "page_scope", "reach_slack",
               "deadline", "categories"}
+# 依頼の種類 (params.kind)。省略時は従来どおりのリサーチ
+KIND_RESEARCH, KIND_STORE_LIST = "research", "store_list"
+KINDS = (KIND_RESEARCH, KIND_STORE_LIST)
 MIN_PROFIT_RANGE = (-5000, 100000)   # 下限は run.KEEP_ROW_MIN_PROFIT と同じ
 HISTOGRAM_BUCKET = 1000
 
@@ -43,6 +46,11 @@ class ResearchParams:
     reach_slack: float = DEFAULT_REACH_SLACK
     deadline: datetime | None = None    # 終了時刻の上限 (タイムゾーン付き)
     categories: tuple[str, ...] = ()    # 大分類 (categories.GROUPS) で対象を絞る。空 = すべて
+
+
+@dataclass(frozen=True)
+class StoreListParams:
+    """店舗リスト更新の依頼 (kind = store_list)。条件は持たない"""
 
 
 @dataclass(frozen=True)
@@ -115,11 +123,22 @@ def _categories(raw: dict) -> tuple[str, ...]:
     return tuple(value)
 
 
-def parse_params(raw) -> ResearchParams:
-    """依頼の params を検証する。不明なキー・範囲外の値は場所と理由を付けて拒否する"""
+def parse_params(raw) -> ResearchParams | StoreListParams:
+    """依頼の params を検証する。不明なキー・範囲外の値は場所と理由を付けて拒否する。
+
+    kind が "store_list" なら StoreListParams (他のキーは持てない)、省略か "research" なら ResearchParams。
+    """
     if not isinstance(raw, dict):
         raise ParamsError(f"params: オブジェクトで指定する: {raw!r}")
-    unknown = sorted(set(raw) - PARAM_KEYS)
+    kind = raw.get("kind", KIND_RESEARCH)
+    if kind not in KINDS:
+        raise ParamsError(f"kind: {' / '.join(KINDS)} のどちらかで指定する: {kind!r}")
+    if kind == KIND_STORE_LIST:
+        extra = sorted(set(raw) - {"kind"})
+        if extra:
+            raise ParamsError(f"params: 店舗リスト更新 (kind = store_list) に条件は付けられない: {', '.join(map(str, extra))}")
+        return StoreListParams()
+    unknown = sorted(set(raw) - PARAM_KEYS - {"kind"})
     if unknown:
         raise ParamsError(f"params: 不明なキー: {', '.join(map(str, unknown))}")
     purchase_date = _purchase_date(raw)
@@ -159,6 +178,11 @@ def build_run_args(params: ResearchParams, request_id: int) -> list[str]:
     for group in params.categories:
         args += ["--category", group]
     return args
+
+
+def build_refresh_args(request_id: int) -> list[str]:
+    """python -m tools.yahoo_pp.refresh に渡す引数 (店舗リスト更新の依頼用)"""
+    return ["--request-id", str(int(request_id))]
 
 
 def buyback_histogram(prices: Iterable[int], bucket: int = HISTOGRAM_BUCKET) -> dict[str, int]:

@@ -110,3 +110,15 @@ def fetch_worker_state(client: Client) -> dict | None:
 def upsert_worker_state(client: Client, fields: dict) -> None:
     """待ち受けの状態 (常に 1 行) を作る / 渡した列だけ更新する"""
     client.table(WORKER_STATE).upsert({**fields, "singleton": True}, on_conflict="singleton").execute()
+
+
+# ---- 店舗リストのスナップショット (arbitrage_store_lists) ----
+# スキーマは db/arbitrage_store_lists.sql。python -m tools.yahoo_pp.refresh が書く
+
+STORE_LISTS = "arbitrage_store_lists"
+
+
+def insert_store_list(client: Client, row: dict) -> int:
+    """スナップショット 1 行を insert し、その id を返す"""
+    data = client.table(STORE_LISTS).insert(row).execute().data
+    return data[0]["id"]

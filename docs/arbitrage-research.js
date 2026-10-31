@@ -10,6 +10,7 @@ import {
   isActiveStatus, isInt, isMissingTableError, isObject, isWorkerAlive, num, paramsToForm, progressPercent,
   purchaseDateToApply, str, summarizeParams, todayIso,
 } from './arbitrage-research-calc.js';
+import { STORE_LIST_STAGE_LABELS, isStoreListRequest, isWithinPeriod } from './arbitrage-stores.js';
 
 const POLL_ACTIVE_MS = 15000;   // 有効な依頼がある間
 const POLL_IDLE_MS = 60000;     // 無い間は待ち受けの状態だけ、ゆっくり見直す
@@ -41,6 +42,11 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// replaceChildren は null / false を文字列にして入れてしまうので、h() と同じ条件で捨ててから差し替える
+function mount($el, ...children) {
+  $el.replaceChildren(...children.flat(Infinity).filter((c) => c != null && c !== false));
+}
+
 const emptyState = () => ({
   open: false,          // リサーチタブを表示中か (ポーリングはこの間だけ)
   loaded: false,        // フォームを組み立て済みか (入力内容はタブを移動しても残す)
@@ -48,16 +54,17 @@ const emptyState = () => ({
   config: null,         // arbitrage_settings.config (無ければ null)
   seenSettingsDate: null,   // 前回読んだ設定の購入予定日 (設定側で変わったときだけ入力欄に反映する)
   worker: null,         // arbitrage_worker_state の行 (無ければ null)
-  requests: [],         // 直近の依頼 (新しい順)
+  requests: [],         // 直近の依頼 (新しい順。店舗リスト更新の依頼 (kind = store_list) も混ざる)
   missingTable: false,  // db/arbitrage_research.sql が未実行
+  storeList: null,      // 最新の店舗リストの掲載期間 (arbitrage_store_lists。無ければ null)
 });
 
 /**
  * リサーチ画面を組み立てる。open() で読み込みとポーリングを始め、close() で止める。
  * onEditSettings: 「設定を編集」/ onShowResults(runId): 「結果を見る」/ onSettingsChanged: 設定の購入予定日を書き換えた後
- * onRunFinished: 表示中に依頼が終了した後 (実行一覧の読み直し用)
+ * onRunFinished: 表示中に依頼が終了した後 (実行一覧の読み直し用) / onOpenStores: 「店舗リストタブで更新する」
  */
-export function createResearch({ supabase, $root, onEditSettings, onShowResults, onSettingsChanged, onRunFinished }) {
+export function createResearch({ supabase, $root, onEditSettings, onShowResults, onSettingsChanged, onRunFinished, onOpenStores }) {
   const $ = (name) => $root.querySelector(`[data-research="${name}"]`);
   const $status = $('status');
   const $body = $('body');
@@ -82,6 +89,8 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
   }
 
   const latest = () => state.requests[0] ?? null;
+  // 前回のリサーチの条件 (店舗リスト更新の依頼は条件を持たないので飛ばす)
+  const latestResearch = () => state.requests.find((r) => !isStoreListRequest(r.params)) ?? null;
   const activeRequest = () => state.requests.find((r) => isActiveStatus(r.status)) ?? null;
   const settingsDate = () => (isObject(state.config) && isValidDate(state.config.purchase_date) ? state.config.purchase_date : null);
 
@@ -243,16 +252,16 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
   function renderActive() {
     const date = readForm().purchase_date;
     if (!isObject(state.config)) {
-      ui.active.replaceChildren(h('p', { class: 'text-sm text-amber-700' },
+      mount(ui.active, h('p', { class: 'text-sm text-amber-700' },
         '設定がまだ保存されていません。「設定を編集」から設定を保存すると、リサーチを実行できます。'));
       return;
     }
     if (!isValidDate(date)) {
-      ui.active.replaceChildren(h('p', { class: 'text-sm text-slate-400' }, '購入予定日を選ぶと、その日に有効なものを表示します。'));
+      mount(ui.active, h('p', { class: 'text-sm text-slate-400' }, '購入予定日を選ぶと、その日に有効なものを表示します。'));
       return;
     }
     const active = activeOnDate(state.config, date);
-    ui.active.replaceChildren(
+    mount(ui.active, 
       date < todayIso() && h('p', { class: 'text-sm text-amber-700' }, '購入予定日が過去の日付です。'),
       listBlock(`${date} のキャンペーン`, active.campaigns.map(describePoint), 'この日が対象日のキャンペーンはありません'),
       listBlock('使える手持ちクーポン', active.coupons.map(describeCoupon), 'この日に有効な手持ちクーポンはありません'),
@@ -280,15 +289,27 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       sub && h('div', { class: 'text-xs text-slate-500 mt-0.5' }, sub));
   }
 
+  /** 購入予定日が最新の店舗リストの掲載期間の外なら警告 (期間外の日付で run すると stores.py がエラーにする) */
+  function periodWarning(purchaseDate) {
+    const list = state.storeList;
+    if (!list || !isValidDate(purchaseDate) || isWithinPeriod(list, purchaseDate)) return null;
+    const monthDay = (iso) => { const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(str(iso)); return m ? `${Number(m[1])}/${Number(m[2])}` : str(iso); };
+    return h('p', { class: 'mt-3 text-sm bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 flex flex-wrap items-center gap-2', role: 'alert' },
+      h('span', {}, `購入予定日が店舗リストの掲載期間 (${monthDay(list.period_start)}〜${monthDay(list.period_end)}) の外です。`
+        + 'この日付では店舗リストが読めず、実行が失敗します。'),
+      h('button', { type: 'button', class: 'text-sm text-blue-700 underline', dataset: { action: 'open-stores' } }, '店舗リストタブで更新する'));
+  }
+
   function renderEstimate() {
     const now = new Date();
     const { estimate, deadline, params } = currentEstimate(readForm(), now);
     renderCategoryCounts(params);
     if (!estimate) {
-      ui.estimate.replaceChildren(
+      mount(ui.estimate, 
         h('div', { class: 'grid gap-3 grid-cols-2 lg:grid-cols-5' },
           stat('対象 JAN 数', '不明'), stat('API 段階', '不明'), stat('確定判定', '不明'), stat('合計', '不明'), stat('完了予定', '不明')),
-        h('p', { class: 'text-sm text-amber-700 mt-3' }, '待ち受けを一度起動すると予測できます。'));
+        h('p', { class: 'text-sm text-amber-700 mt-3' }, '待ち受けを一度起動すると予測できます。'),
+        periodWarning(params.purchase_date));
       return;
     }
     const finish = new Date(now.getTime() + estimate.totalSeconds * 1000);
@@ -308,7 +329,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     const asOf = formatDateTime(state.worker?.buyback_histogram?.as_of);
     const filtered = params.categories !== null;
     const jansSub = !filtered ? null : (estimate.categoriesApplied ? '選んだ分類のみ' : '全分類の件数 (分類ごとの件数は待ち受けを起動し直すと出ます)');
-    ui.estimate.replaceChildren(
+    mount(ui.estimate, 
       h('div', { class: 'grid gap-3 grid-cols-2 lg:grid-cols-5' },
         stat('対象 JAN 数', `約 ${num(Math.round(estimate.jans))} 件`, jansSub),
         stat('API 段階', formatDuration(estimate.apiSeconds)),
@@ -316,17 +337,18 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
         stat('合計', formatDuration(estimate.totalSeconds)),
         stat('完了予定', formatDateTime(finish.toISOString()), '今始めた場合')),
       $warning,
+      periodWarning(params.purchase_date),
       h('p', { class: 'text-xs text-slate-400 mt-3' },
         `${asOf ? `買取価格データの基準: ${asOf}。` : ''}過去の実行の速さから計算した目安です。`));
   }
 
   function renderWorker() {
     if (isWorkerAlive(state.worker?.heartbeat_at)) {
-      ui.worker.replaceChildren(h('p', { class: 'text-emerald-700 font-medium' }, '待ち受け: 動作中'));
+      mount(ui.worker, h('p', { class: 'text-emerald-700 font-medium' }, '待ち受け: 動作中'));
       return;
     }
     const last = formatDateTime(state.worker?.heartbeat_at);
-    ui.worker.replaceChildren(
+    mount(ui.worker, 
       h('p', { class: 'text-amber-700 font-medium' }, `待ち受け: 停止中${last ? `（最後の応答 ${last}）` : ''}`),
       h('p', { class: 'text-slate-500 mt-1' }, '依頼は出せます。この PC のプロジェクトフォルダで次のコマンドを実行して待ち受けを起動すると開始します。'),
       h('code', { class: 'block mt-1 px-3 py-2 rounded-lg bg-slate-100 text-slate-800 text-sm select-all overflow-x-auto whitespace-nowrap' }, WORKER_COMMAND));
@@ -335,7 +357,8 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
   function renderRunButton() {
     const active = activeRequest();
     ui.run.disabled = state.busy || state.missingTable || Boolean(active) || !isObject(state.config);
-    ui.run.title = active ? 'すでに実行中の依頼があります' : '';
+    ui.run.title = !active ? '' : isStoreListRequest(active.params)
+      ? '店舗リストの更新が終わるまでリサーチは実行できません' : 'すでに実行中の依頼があります';
   }
 
   function bar(label, done, total) {
@@ -355,11 +378,11 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
   function renderCurrent() {
     const r = latest();
     if (state.missingTable) {
-      ui.current.replaceChildren(h('p', { class: 'text-sm text-red-600' }, `${SQL_FILE} を Supabase で実行してください。`));
+      mount(ui.current, h('p', { class: 'text-sm text-red-600' }, `${SQL_FILE} を Supabase で実行してください。`));
       return;
     }
     if (!r) {
-      ui.current.replaceChildren(h('p', { class: 'text-sm text-slate-400' }, 'まだ依頼はありません。'));
+      mount(ui.current, h('p', { class: 'text-sm text-slate-400' }, 'まだ依頼はありません。'));
       return;
     }
     const p = isObject(r.progress) ? r.progress : {};
@@ -372,6 +395,10 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     if (r.status === 'running' && !alive) {
       lines.push('待ち受けからの応答が途絶えています。PC の待ち受けが動いているか確認してください。');
     }
+    if (isStoreListRequest(r.params)) {
+      renderCurrentStoreList(r, p, active, lines);
+      return;
+    }
     if (active && r.cancel_requested) lines.push('中止を依頼済みです。確認済みの分を保存して止まります。');
 
     const info = [
@@ -383,7 +410,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       ['実行名', p.run_name ? str(p.run_name) : null],
     ].filter(([, value]) => value);
 
-    ui.current.replaceChildren(
+    mount(ui.current, 
       h('div', { class: 'flex flex-wrap items-center gap-2' },
         badge(r.status),
         h('span', { class: 'text-sm text-slate-500' }, `依頼 ${formatDateTime(r.created_at)}`),
@@ -412,18 +439,49 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       }, str(r.message)));
   }
 
+  /** 最新の依頼が店舗リスト更新のとき: 条件・JAN の進捗は無いので、段階と件数だけ出す (詳細は店舗リストタブ) */
+  function renderCurrentStoreList(r, p, active, lines) {
+    if (active && r.cancel_requested) lines.push('中止を依頼済みです。区切りのよいところで止まります。');
+    const stage = r.status === 'running' ? (STORE_LIST_STAGE_LABELS[p.stage] || '準備中') : null;
+    mount(ui.current, 
+      h('div', { class: 'flex flex-wrap items-center gap-2' },
+        badge(r.status),
+        h('span', { class: 'text-sm text-slate-700 font-medium' }, '店舗リスト更新'),
+        h('span', { class: 'text-sm text-slate-500' }, `依頼 ${formatDateTime(r.created_at)}`),
+        h('span', { class: 'flex-1' }),
+        active && !r.cancel_requested && h('button', {
+          type: 'button', disabled: state.busy,
+          class: 'px-3 py-2 rounded-lg border border-red-600 text-red-600 hover:bg-red-50 disabled:opacity-50 text-sm font-medium',
+          dataset: { action: 'cancel', id: String(r.id) },
+        }, '中止'),
+        h('button', { type: 'button', class: BTN_OUTLINE, dataset: { action: 'open-stores' } }, '店舗リストタブへ')),
+      lines.map((text) => h('p', { class: 'text-sm text-amber-700 mt-2' }, text)),
+      r.status === 'running' && h('div', { class: 'mt-3' }, bar(stage || '進み具合', p.done, p.total)),
+      h('p', { class: 'text-xs text-slate-500 mt-2' }, [
+        stage && `段階: ${stage}`,
+        r.status === 'running' && p.eta && `完了予測 ${formatDateTime(p.eta)}`,
+        formatDateTime(p.updated_at || r.updated_at) && `最終更新 ${formatDateTime(p.updated_at || r.updated_at)}`,
+      ].filter(Boolean).join(' / ')),
+      p.note && h('p', { class: 'text-sm text-slate-600 mt-2 break-words' }, str(p.note)),
+      r.message && h('p', { class: `text-sm mt-2 break-words ${r.status === 'failed' ? 'text-red-600' : 'text-slate-600'}` }, str(r.message)));
+  }
+
   function renderHistory() {
     if (state.requests.length === 0) {
-      ui.history.replaceChildren(h('p', { class: 'text-sm text-slate-400' }, '履歴はありません。'));
+      mount(ui.history, h('p', { class: 'text-sm text-slate-400' }, '履歴はありません。'));
       return;
     }
-    ui.history.replaceChildren(h('ul', { class: 'divide-y divide-slate-100 text-sm' },
+    mount(ui.history, h('ul', { class: 'divide-y divide-slate-100 text-sm' },
       state.requests.slice(0, HISTORY_LIMIT).map((r) => h('li', { class: 'py-2 flex flex-wrap items-center gap-x-3 gap-y-1' },
         h('span', { class: 'text-slate-500 whitespace-nowrap' }, formatDateTime(r.created_at)),
         badge(r.status),
-        h('span', { class: 'text-slate-700 whitespace-nowrap' },
-          isObject(r.progress) && r.progress.results != null ? `結果 ${num(r.progress.results)} 件` : '結果 —'),
-        h('span', { class: 'text-xs text-slate-500 basis-full sm:basis-auto' }, summarizeParams(r.params))))));
+        isStoreListRequest(r.params)
+          ? h('span', { class: 'text-slate-700 whitespace-nowrap' }, '店舗リスト更新')
+          : [
+            h('span', { class: 'text-slate-700 whitespace-nowrap' },
+              isObject(r.progress) && r.progress.results != null ? `結果 ${num(r.progress.results)} 件` : '結果 —'),
+            h('span', { class: 'text-xs text-slate-500 basis-full sm:basis-auto' }, summarizeParams(r.params)),
+          ]))));
   }
 
   function renderData() {
@@ -448,12 +506,16 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     const token = generation;
     const seq = ++refreshSeq;
     clearTimeout(timer);
-    const [settingsRes, workerRes, requestsRes] = await Promise.all([
+    const [settingsRes, workerRes, requestsRes, storeListRes] = await Promise.all([
       withSettings
         ? supabase.from('arbitrage_settings').select('config').eq('singleton', true).maybeSingle()
         : Promise.resolve(null),
       supabase.from('arbitrage_worker_state').select('heartbeat_at,buyback_histogram,rates,updated_at').eq('singleton', true).maybeSingle(),
       supabase.from('arbitrage_research_requests').select(REQUEST_COLUMNS).order('id', { ascending: false }).limit(HISTORY_LIMIT),
+      // 掲載期間の警告用 (テーブルが無い・読めないときは警告を出さないだけ)
+      withSettings
+        ? supabase.from('arbitrage_store_lists').select('id,fetched_on,period_start,period_end').order('id', { ascending: false }).limit(1).maybeSingle()
+        : Promise.resolve(null),
     ]);
     if (token !== generation || seq !== refreshSeq) return;
 
@@ -470,6 +532,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     const missingTable = failed.some(isMissingTableError);
     if (workerRes.error) console.error('load arbitrage_worker_state failed', workerRes.error);
     if (requestsRes.error) console.error('load arbitrage_research_requests failed', requestsRes.error);
+    if (storeListRes?.error && !isMissingTableError(storeListRes.error)) console.error('load arbitrage_store_lists failed', storeListRes.error);
 
     const finished = !requestsRes.error && hasNewlyFinished(state.requests, requestsRes.data);
     // 読めなかったものは前回の値を残す (一時的な通信エラーで表示を消さない)
@@ -479,6 +542,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       worker: workerRes.error ? state.worker : (workerRes.data ?? null),
       requests: requestsRes.error ? state.requests : (requestsRes.data ?? []),
       missingTable,
+      storeList: storeListRes && !storeListRes.error ? (storeListRes.data ?? null) : state.storeList,
     };
     if (missingTable) setStatus(`リサーチ用のテーブルがまだありません。${SQL_FILE} を Supabase で実行してください。`, 'error');
     else if (failed.length > 0 || settingsRes?.error) setStatus('最新の状態を読み込めませんでした。しばらくすると自動で読み直します。', 'warn');
@@ -486,7 +550,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
 
     if (!state.loaded) {
       // 初回: 前回の依頼の条件を初期値にする (購入予定日は設定の値を優先)
-      buildForm(paramsToForm(latest()?.params, settingsDate() ?? todayIso()));
+      buildForm(paramsToForm(latestResearch()?.params, settingsDate() ?? todayIso()));
       state = { ...state, loaded: true, seenSettingsDate: settingsDate() };
     } else if (withSettings && settingsRes && !settingsRes.error) {
       // タブに戻ってきたとき: 設定側で購入予定日が変わっていたら合わせて知らせる。
@@ -586,7 +650,11 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
 
   async function cancel(id) {
     if (state.busy) return;
-    if (!confirm('実行中のリサーチを中止しますか？\n確認済みの分は保存されます。')) return;
+    const target = state.requests.find((r) => r.id === id);
+    const text = target && isStoreListRequest(target.params)
+      ? '店舗リストの更新を中止しますか？\n店舗リストは前のままになります。'
+      : '実行中のリサーチを中止しますか？\n確認済みの分は保存されます。';
+    if (!confirm(text)) return;
     const token = generation;
     state = { ...state, busy: true };
     renderData();
@@ -630,6 +698,8 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       return;
     } else if (action === 'edit-settings') {
       onEditSettings?.();
+    } else if (action === 'open-stores') {
+      onOpenStores?.();
     } else if (action === 'categories-all' || action === 'categories-none') {
       setCategories(action === 'categories-all' ? [...CATEGORY_GROUPS] : []);
       renderEstimate();

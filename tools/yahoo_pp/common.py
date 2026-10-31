@@ -31,6 +31,17 @@ class RateLimited(Exception):
     """HTTP 489: アクセス制限。時間をおいて再開する"""
 
 
+class Cancelled(Exception):
+    """中止の依頼 (refresh --request-id の cancel_requested) を受けて、店 1 件の区切りで止めた"""
+
+
+# 各段階の関数は on_progress(段階名, 済み件数, 全件数) と should_stop() -> bool を受け取る (どちらも省略可)
+def check_stop(should_stop) -> None:
+    """should_stop() が True なら Cancelled (店 1 件の区切りで呼ぶ)"""
+    if should_stop is not None and should_stop():
+        raise Cancelled()
+
+
 class Fetcher:
     def __init__(self, cache_dir: Path = CACHE_DIR, interval: float = INTERVAL):
         self.cache_dir = cache_dir
