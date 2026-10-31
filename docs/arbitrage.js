@@ -331,8 +331,8 @@ function detailHtml(r) {
               ${couponHtml}
             </div>
             <div class="text-xs text-slate-500">
-              実質 ${yen(r.effective_price)} ＝ 販売 ${yen(r.sale_price)} − クーポン ${yen(r.coupon_discount)} − ポイント ${number(r.points_total)}<br>
-              ${r.premium_price ? `LYPプレミアム会員限定価格 ${yen(r.premium_price)}（通常より ${yen(r.sale_price - r.premium_price)} 安い。参考表示で計算には含めない）<br>` : ''}
+              実質 ${yen(r.effective_price)} ＝ ${r.premium_price ? `LYP会員価格 ${yen(r.premium_price)}` : `販売 ${yen(r.sale_price)}`} − クーポン ${yen(r.coupon_discount)} − ポイント ${number(r.points_total)}<br>
+              ${r.premium_price ? `LYPプレミアム会員限定価格で計算（通常価格 ${yen(r.sale_price)} より ${yen(r.sale_price - r.premium_price)} 安い。購入する端末は LYP 会員）<br>` : ''}
               買取 ${yen(r.buyback_price)}（${escapeHtml(SOURCE_LABELS[r.buyback_source] || r.buyback_source)}、${escapeHtml(r.buyback_date || '')} 時点）<br>
               JAN ${escapeHtml(r.jan_code)} ／ ${escapeHtml(r.category || 'カテゴリ不明')} ／ 確認 ${formatDateTime(r.checked_at)}
             </div>

@@ -63,9 +63,14 @@ class ItemPage:
     upsell_rate: Decimal          # ストアポイント上乗せ率 (0.14 = +14%)
     point_titles: tuple[str, ...]  # ポイント内訳に出ている行の名前 (target=page の判定用)
     # LYPプレミアム会員限定価格 (税込)。ページは非会員には表示しないが item.premiumPrice に入っている。
-    # 参考表示のみで、実質価格の計算には使わない (会員ではない前提)
+    # 購入する端末は LYP 会員なので、あればこちらを支払額として計算する (purchase_price)
     premium_price: int | None = None
     props: dict = field(compare=False, repr=False, default_factory=dict)
+
+    @property
+    def purchase_price(self) -> int:
+        """実際に支払う税込価格 = 会員限定価格があればそれ、無ければ通常価格"""
+        return self.premium_price if self.premium_price is not None else self.price
 
 
 @dataclass(frozen=True)
@@ -273,7 +278,7 @@ def coupon_is_valid(detail: dict, page: ItemPage) -> bool:
     return (detail["fund_type"] == "STORE"
             and detail["store_id"] == page.store_id
             and (detail["count_min"] or 1) <= 1
-            and (detail["price_min"] or 0) <= page.price)
+            and (detail["price_min"] or 0) <= page.purchase_price)
 
 
 class PageClient:
