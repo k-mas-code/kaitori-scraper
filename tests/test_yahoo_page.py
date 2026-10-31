@@ -198,3 +198,14 @@ def test_public_coupon_expiry_against_purchase_date():
     assert not coupon_expired("2026/10/6 0:00まで", date(2026, 10, 5))
     assert not coupon_expired("2026/10/31 23:59まで", date(2026, 10, 31))
     assert not coupon_expired(None, date(2026, 10, 11)) and not coupon_expired("期間限定", date(2026, 10, 11))
+
+
+def test_premium_price_is_read_only_when_cheaper_than_sale_price():
+    props = json.loads(json.dumps(FIXTURES["joshin"]["pageProps"]))
+    sale = props["item"]["applicablePrice"]
+    assert page("joshin").premium_price is None                      # fixture には無い
+    props["item"]["premiumPrice"] = sale - 1936
+    assert parse_item_page(props).premium_price == sale - 1936
+    for bad in (sale, sale + 1, 0, -1, "32912", True, None):          # 通常価格以上・不正な値は採らない
+        props["item"]["premiumPrice"] = bad
+        assert parse_item_page(props).premium_price is None

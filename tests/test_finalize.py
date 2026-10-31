@@ -53,3 +53,16 @@ def test_build_result_with_store_upsell():
     # 税抜 49,800 × 15% = 7,470pt → 実質 47,310
     assert row["points_total"] == 7470 and row["effective_price"] == 47310 and row["profit"] == 690
     assert [(c["name"], c["rate"]) for c in row["points"]] == [("ストアポイント", 0.15)]
+
+
+def test_premium_price_is_carried_to_row_but_not_used():
+    from dataclasses import replace
+    p, store = joshin_page()
+    candidate = {"jan_code": p.jan_code, "store_id": p.store_id, "item_code": p.item_code, "item_url": p.url,
+                 "item_name": p.name, "category": "家電", "buyback_price": 48000,
+                 "buyback_source": "rudeya", "buyback_date": "2026-10-04", "store_name": p.store_name}
+    upsell = StoreUpsell(p.store_id, D("0.14"), valid_from=date(2026, 10, 8))
+    base = build_result(candidate, p, store, cfg(upsell), None, None)
+    row = build_result(candidate, replace(p, premium_price=p.price - 2000), store, cfg(upsell), None, None)
+    assert base["premium_price"] is None and row["premium_price"] == p.price - 2000
+    assert row["effective_price"] == base["effective_price"] and row["profit"] == base["profit"]

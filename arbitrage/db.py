@@ -60,8 +60,29 @@ def upsert_results(client: Client, run_id: int, rows: list[dict]) -> int:
         unique.setdefault((row["store_id"], row["item_code"]), {**row, "run_id": run_id})
     payload = list(unique.values())
     for i in range(0, len(payload), BATCH_SIZE):
-        client.table("arbitrage_results").upsert(payload[i:i + BATCH_SIZE], on_conflict=ON_CONFLICT).execute()
+        batch = payload[i:i + BATCH_SIZE]
+        try:
+            client.table("arbitrage_results").upsert(batch, on_conflict=ON_CONFLICT).execute()
+        except Exception as e:
+            # 列が未追加 (db/arbitrage.sql の alter を実行していない) なら、その列を外して保存し、結果を失わない
+            missing = _missing_column(e, OPTIONAL_RESULT_COLUMNS)
+            if missing is None:
+                raise
+            logger.warning("arbitrage_results に列 %s が無いので外して保存する (db/arbitrage.sql を実行する)", missing)
+            payload = [{k: v for k, v in row.items() if k != missing} for row in payload]
+            client.table("arbitrage_results").upsert(payload[i:i + BATCH_SIZE], on_conflict=ON_CONFLICT).execute()
     return len(payload)
+
+
+OPTIONAL_RESULT_COLUMNS = ("premium_price",)   # 後から足した列。無い DB でも保存は続ける
+
+
+def _missing_column(error: Exception, candidates: tuple[str, ...]) -> str | None:
+    """PostgREST の「列が無い」エラー (PGRST204) なら、その列名を返す"""
+    text = str(error)
+    if "PGRST204" not in text and "column" not in text.lower():
+        return None
+    return next((c for c in candidates if c in text), None)
 
 
 def finish_run(client: Client, run_id: int, candidate_count: int, result_count: int) -> None:

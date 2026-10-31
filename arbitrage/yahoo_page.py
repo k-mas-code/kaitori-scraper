@@ -62,6 +62,9 @@ class ItemPage:
     has_variations: bool          # 色・サイズ違い (SKU) がある
     upsell_rate: Decimal          # ストアポイント上乗せ率 (0.14 = +14%)
     point_titles: tuple[str, ...]  # ポイント内訳に出ている行の名前 (target=page の判定用)
+    # LYPプレミアム会員限定価格 (税込)。ページは非会員には表示しないが item.premiumPrice に入っている。
+    # 参考表示のみで、実質価格の計算には使わない (会員ではない前提)
+    premium_price: int | None = None
     props: dict = field(compare=False, repr=False, default_factory=dict)
 
 
@@ -98,6 +101,14 @@ def extract_page_props(html: str) -> dict:
 
 def _campaign_rows(point: dict, key: str) -> list[dict]:
     return [row for group in point.get(key) or [] for row in group.get("partsCampaignList") or []]
+
+
+def _premium_price(item: dict, price: int) -> int | None:
+    """item.premiumPrice が通常価格より安い整数のときだけ採用する"""
+    premium = item.get("premiumPrice")
+    if isinstance(premium, bool) or not isinstance(premium, int) or not 0 < premium < price:
+        return None
+    return premium
 
 
 def parse_item_page(props: dict) -> ItemPage:
@@ -138,6 +149,7 @@ def parse_item_page(props: dict) -> ItemPage:
         is_used=bool(item.get("isUsed")),
         has_variations=bool(item.get("individualItemList")),
         upsell_rate=upsell_pct / 100,
+        premium_price=_premium_price(item, price),
         point_titles=tuple(row.get("title") or "" for row in current + conditional),
         props=props,
     )
