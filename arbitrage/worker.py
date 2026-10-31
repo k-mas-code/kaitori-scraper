@@ -1,7 +1,7 @@
 """待ち受け: python -m arbitrage.worker
 
-結果ページの「リサーチ実行」で作られた依頼 (Supabase の arbitrage_research_requests) を 10 秒ごとに見に行き、
-python -m arbitrage.run を子プロセスで実行する。この PC で起動したままにしておく (止めるのは Ctrl+C)。
+結果ページの「リサーチ実行」(または「店舗リストを更新」) で作られた依頼 (Supabase の arbitrage_research_requests)
+を 10 秒ごとに見に行き、python -m arbitrage.run (店舗リスト更新なら python -m tools.yahoo_pp.refresh) を子プロセスで実行する。この PC で起動したままにしておく (止めるのは Ctrl+C)。
 依頼の出力は data/arbitrage/requests/{依頼ID}.log に残る。スキーマは db/arbitrage_research.sql。
 """
 
@@ -25,8 +25,8 @@ from . import db
 from .buyback import Buyback, load_buyback_prices
 from .config import ROOT
 from .progress import EXIT_CANCELLED
-from .research import (DEFAULT_RATES, HISTOGRAM_BUCKET, ParamsError, build_run_args, buyback_histogram_fields,
-                       parse_params, updated_rates)
+from .research import (DEFAULT_RATES, HISTOGRAM_BUCKET, ParamsError, StoreListParams, build_refresh_args,
+                       build_run_args, buyback_histogram_fields, parse_params, updated_rates)
 from .state import RUNS_DIR, lock_file
 
 logger = logging.getLogger("arbitrage.worker")
@@ -39,9 +39,15 @@ FINISH_ATTEMPTS = 3                         # 終了状態の書き込みは、�
 HEARTBEAT_STALE = timedelta(seconds=60)     # 他の待ち受けの heartbeat がこれより新しい間は、依頼に手を出さない
 ORPHAN_STOP_WAIT = 60                       # 残っていた run に SIGINT を送ってから終了を待つ秒数 (1 回の回収あたり)
 FOREIGN_KEY_VIOLATION = "23503"             # run_id の指す arbitrage_runs 行が無い
+RUN_MODULE = "arbitrage.run"                # リサーチ (kind = research) の子プロセス
+REFRESH_MODULE = "tools.yahoo_pp.refresh"   # 店舗リスト更新 (kind = store_list) の子プロセス
+CHILD_MODULES = (RUN_MODULE, REFRESH_MODULE)
 
 MSG_ORPHANED = "待ち受けが止まったため中断された"
 MSG_INTERRUPTED = "待ち受けを止めたため中断された。同じ条件で実行し直すと続きから再開する"
+MSG_INTERRUPTED_REFRESH = "待ち受けを止めたため中断された。店舗リストは前のまま (再依頼すると最初から取り直す)"
+MSG_CANCELLED_RUN = "中止の依頼を受けて打ち切った (確認済みの分は保存済み)"
+MSG_CANCELLED_REFRESH = "中止の依頼を受けて止めた (店舗リストは前のまま)"
 MSG_CANCELLED_BEFORE_START = "開始前に中止された"
 
 
@@ -64,13 +70,15 @@ def load_histogram_prices() -> list[Buyback]:
 
 
 def run_pid_alive(pid: int, request_id: int) -> bool:
-    """pid が「この依頼の run」としてまだ動いているか (/proc のコマンドラインで確かめる。PID の使い回しを誤認しない)"""
+    """pid が「この依頼の子プロセス」(run か refresh) としてまだ動いているか
+    (/proc のコマンドラインで確かめる。PID の使い回しを誤認しない)"""
     try:
         args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
         return False
     expected = [b"--request-id", str(request_id).encode()]
-    return b"arbitrage.run" in args and any(args[i:i + 2] == expected for i in range(len(args)))
+    return (any(m.encode() in args for m in CHILD_MODULES)
+            and any(args[i:i + 2] == expected for i in range(len(args))))
 
 
 def interrupt_pid(pid: int) -> None:
@@ -316,7 +324,10 @@ class Worker:
             return
         try:
             params = parse_params(request.get("params"))
-            run_args = build_run_args(params, request_id)
+            if isinstance(params, StoreListParams):
+                module, run_args = REFRESH_MODULE, build_refresh_args(request_id)
+            else:
+                module, run_args = RUN_MODULE, build_run_args(params, request_id)
         except Exception as e:
             # ParamsError 以外 (想定外の値で検証そのものが落ちた) も failed にする。
             # queued のまま残すと毎周期失敗し続け、新しい依頼も受け付けられなくなる
@@ -325,32 +336,33 @@ class Worker:
             detail = str(e) if isinstance(e, ParamsError) else f"検証できない値 ({type(e).__name__})"
             self.finish(request_id, "failed", f"依頼の条件が不正: {detail}"[:MESSAGE_LIMIT], from_status="queued")
             return
+        job = "リサーチ" if module == RUN_MODULE else "店舗リスト更新"
         claimed = self.db.update_request(
             self.client, request_id, {"status": "running", "started_at": self.clock().isoformat()},
             only_status="queued")
         if claimed is None:
             logger.warning("依頼 %s は他で処理が始まっていたので飛ばす", request_id)
             return
-        argv = [self.python, "-m", "arbitrage.run", *run_args]
+        argv = [self.python, "-m", module, *run_args]
         log_path = self.log_dir / f"{request_id}.log"
         logger.info("依頼 %s を開始: %s (ログ %s)", request_id, " ".join(argv[1:]), log_path)
         try:
             proc = self.spawn(argv, log_path)
         except OSError as e:
-            self.finish(request_id, "failed", f"リサーチを起動できなかった: {e}"[:MESSAGE_LIMIT])
+            self.finish(request_id, "failed", f"{job}を起動できなかった: {e}"[:MESSAGE_LIMIT])
             return
         self.write_pid(request_id, proc)
         try:
             code = self.wait_for(proc)
         except KeyboardInterrupt:
-            logger.warning("停止: 実行中のリサーチ (依頼 %s) を止める", request_id)
+            logger.warning("停止: 実行中の%s (依頼 %s) を止める", job, request_id)
             proc.send_signal(signal.SIGINT)
             proc.wait()
             self.pid_path(request_id).unlink(missing_ok=True)
-            self.finish(request_id, "failed", MSG_INTERRUPTED)
+            self.finish(request_id, "failed", MSG_INTERRUPTED if module == RUN_MODULE else MSG_INTERRUPTED_REFRESH)
             raise
         self.pid_path(request_id).unlink(missing_ok=True)
-        self.complete(request_id, code, log_path)
+        self.complete(request_id, code, log_path, with_run=module == RUN_MODULE)
 
     def write_pid(self, request_id: int, proc) -> None:
         """子の PID を残す。待ち受けだけが落ちたとき、次の待ち受けが動き続けている run を見つけて止めるため"""
@@ -359,20 +371,25 @@ class Worker:
         except OSError as e:
             logger.warning("依頼 %s の PID を記録できなかった: %s", request_id, e)
 
-    def complete(self, request_id: int, code: int, log_path: Path) -> None:
-        """終了コードから依頼の終了状態を決める: 0 = completed / 3 = cancelled / それ以外 = failed"""
+    def complete(self, request_id: int, code: int, log_path: Path, *, with_run: bool = True) -> None:
+        """終了コードから依頼の終了状態を決める: 0 = completed / 3 = cancelled / それ以外 = failed。
+
+        with_run が False (店舗リスト更新) なら run_id を付けず、rates も更新しない。
+        """
         meta: dict = {}
-        try:
-            row = self.db.fetch_request(self.client, request_id) or {}
-            meta = read_run_meta(self.runs_dir, (row.get("progress") or {}).get("run_name"))
-        except Exception as e:
-            logger.warning("依頼 %s の進捗を読めなかった (run_id は入れない): %s", request_id, e)
+        if with_run:
+            try:
+                row = self.db.fetch_request(self.client, request_id) or {}
+                meta = read_run_meta(self.runs_dir, (row.get("progress") or {}).get("run_name"))
+            except Exception as e:
+                logger.warning("依頼 %s の進捗を読めなかった (run_id は入れない): %s", request_id, e)
         extra = {"run_id": meta["run_id"]} if isinstance(meta.get("run_id"), int) else {}
         if code == 0:
             self.finish(request_id, "completed", **extra)
-            self.update_rates(request_id, meta)   # 終了状態が再送待ちでも、実測は今のうちに反映する
+            if with_run:
+                self.update_rates(request_id, meta)   # 終了状態が再送待ちでも、実測は今のうちに反映する
         elif code == EXIT_CANCELLED:
-            self.finish(request_id, "cancelled", "中止の依頼を受けて打ち切った (確認済みの分は保存済み)", **extra)
+            self.finish(request_id, "cancelled", MSG_CANCELLED_RUN if with_run else MSG_CANCELLED_REFRESH, **extra)
         else:
             message = last_error_line(log_path) or f"終了コード {code} で終了した (ログ: {log_path.name})"
             self.finish(request_id, "failed", message, **extra)

@@ -22,12 +22,14 @@
     </div>
   </header>
 
-  <!-- 利益商品リスト / リサーチ / 設定 の切り替え (ログイン時のみ) -->
+  <!-- 利益商品リスト / リサーチ / 店舗リスト / 設定 の切り替え (ログイン時のみ) -->
   <nav id="tabs" class="hidden max-w-5xl mx-auto px-4 pt-4 flex flex-wrap gap-2" role="tablist" aria-label="画面の切り替え">
     <button id="tab-results" type="button" role="tab" aria-selected="true" aria-controls="app"
             class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white">利益商品リスト</button>
     <button id="tab-research" type="button" role="tab" aria-selected="false" aria-controls="research"
             class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow-sm hover:bg-slate-100">リサーチ</button>
+    <button id="tab-stores" type="button" role="tab" aria-selected="false" aria-controls="stores"
+            class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow-sm hover:bg-slate-100">店舗リスト</button>
     <button id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="settings"
             class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow-sm hover:bg-slate-100">設定</button>
   </nav>
@@ -95,6 +97,15 @@
       </p>
       <div data-research="status" class="text-sm text-slate-500 pb-3" role="status"></div>
       <div data-research="body"></div>
+    </section>
+
+    <!-- 店舗リスト (中身は arbitrage-stores.js が組み立てる) -->
+    <section id="stores" class="hidden" role="tabpanel" aria-labelledby="tab-stores">
+      <p class="text-sm text-slate-500 pb-3">
+        利益計算に使う店舗リスト (ボーナスストアPlus の参加ストア) の最新の内容です。掲載期間を過ぎたら「店舗リストを更新」で PC の待ち受けに取り直させます。
+      </p>
+      <div data-stores="status" class="text-sm text-slate-500 pb-3" role="status"></div>
+      <div data-stores="body"></div>
     </section>
 
     <!-- 設定 (中身は arbitrage-settings.js が組み立てる) -->

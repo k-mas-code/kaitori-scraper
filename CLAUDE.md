@@ -150,6 +150,16 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
   - 既定の rates (2026-10-04 の実測): jan_per_min 27.6 / candidates_per_jan 1.1 / reachable_fraction 0.28 / seconds_per_check 4.1
   - 所要時間に効くのは 買取価格の範囲 (JAN 数)・`page_scope`・`reach_slack` / `min_profit` (届きそうの広さ)・`deadline`
 
+#### 店舗リストタブと更新 (`tools/yahoo_pp/refresh.py` / `db/arbitrage_store_lists.sql`)
+
+- 結果ページの「店舗リスト」タブは `arbitrage_store_lists` (id 降順 1 行) を読む。1 行 = 店舗リスト 1 版 (`fetched_on` / 掲載期間 / `dates` / `summary` / `stores` (非適格も含む。`inv` で区別) / `source_sha` = xlsx の sha256 先頭 16 桁)。オーナーだけ SELECT 可、書くのは service_role (refresh) だけ。スキーマは `db/arbitrage_research.sql` の後に実行
+- 依頼の種類は `params.kind`: 省略 / `research` = 従来のリサーチ、`store_list` = 店舗リスト更新 (**他のキーは持てない**。`research.parse_params` は `StoreListParams()` を返す)。待ち・実行中 1 件の制限は kind を問わず共通
+- 待ち受けは `store_list` なら `[python, -m, tools.yahoo_pp.refresh, --request-id, N]` を起動する (`research.build_refresh_args`)。終了コードの扱い・ログ (`requests/{依頼ID}.log`)・PID ファイルは run と同じ。run_id は付けず rates も更新しない
+- `python -m tools.yahoo_pp.refresh`: bsplus_fetch → enrich (全段階) → build_xlsx (`data/yahoo_pp/new_stores.xlsx`) → `stores.load_stores(今日, 新ファイル)` で検証 (店数 >= 500) → `arbitrage_store_lists` に insert → 旧 xlsx を `yahoo_pp_stores_5genres.{旧取得日}.bak.xlsx` に退避して差し替え (insert に失敗したら差し替えない)。**約 4 時間。その間リサーチは動かない**。日曜・5 のつく日は warning だけ出して続行 (上乗せ率に日曜特典が混ざりうる)
+  - 開始時に前回の json を `data/yahoo_pp/prev/` に退避し `cache/` を消す。失敗 (終了コード 1。HTTP 489 なら「アクセス制限。時間をおいて更新し直す」) ・中止 (終了コード 3) では prev/ を戻し、xlsx も触らない。つまり **途中で止まると取り直しは最初から** (再開なし)
+  - 進捗は依頼行の `progress` に `{"kind": "store_list", "stage": fetch / invoice / points / rating / build / done, "done", "total", "eta", "note", "updated_at"}` を 20 秒以上の間隔で書き、同時に `cancel_requested` を読む (店 1 件の区切りで止める)
+  - `--upload-only`: 取得・差し替えをせず、いまの `data/yahoo_pp/*.json` からスナップショットを insert するだけ (取得日は sched.json の更新日)。`--print-snapshot`: DB に書かず要約を表示 (接続情報も不要)
+
 ### 商品ページの落とし穴 (2026-10-04 調査)
 - ストアクーポンは HTML に無い。`POST /syene-bff/v1/pc/coupon/v3/{店舗ID}/{商品コード}` で取る。ページが発行する匿名 Cookie と `page.crumb` が必要 (無いと 401)
 - **ログインなしでは見えないクーポンがある**: アカウントで獲得済みの限定クーポン (例: Joshin の「60,000円以上で 2,000円OFF」) は、価格や会員フラグを変えて問い合わせても返らない → `coupons.csv` には載らない。設定の `coupons` (手持ちクーポン) に手で登録する

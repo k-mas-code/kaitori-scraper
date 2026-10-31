@@ -461,6 +461,33 @@ def test_pid_file_is_written_while_running_and_removed_after(tmp_path):
     assert seen[0] == "4321" and not (tmp_path / "requests" / "7.pid").exists()
 
 
+def test_store_list_request_runs_refresh_without_run_id_or_rates(tmp_path):
+    h = Harness(tmp_path, [{"id": 7, "params": {"kind": "store_list"}, "progress": {"run_name": "r"}}], code=0)
+    h.write_meta("r", {"run_id": 31, "stats": {"request_id": 7, "jan_processed": 900, "api_seconds": 600}})
+    h.worker.tick()
+    assert h.spawned == [["python", "-m", "tools.yahoo_pp.refresh", "--request-id", "7"]]
+    row = h.db.requests[7]
+    assert row["status"] == "completed" and "run_id" not in row     # 店舗リスト更新には run が無い
+    assert h.db.state["rates"] == DEFAULT_RATES                      # rates も触らない
+    assert h.db.updates[-1][1]["status"] == "completed"
+
+
+@pytest.mark.parametrize("code, status, log_text, message", [
+    (3, "cancelled", "", "中止"),
+    (1, "failed", "2026-10-31 10:00:00,000 ERROR アクセス制限。時間をおいて更新し直す (HTTP 489: x)\n", "アクセス制限"),
+])
+def test_store_list_exit_codes(tmp_path, code, status, log_text, message):
+    h = Harness(tmp_path, [{"id": 7, "params": {"kind": "store_list"}}], code=code, log_text=log_text)
+    h.worker.tick()
+    assert h.db.requests[7]["status"] == status and message in h.db.requests[7]["message"]
+
+
+def test_store_list_with_extra_keys_fails_without_running(tmp_path):
+    h = Harness(tmp_path, [{"id": 7, "params": {"kind": "store_list", "purchase_date": "2026-10-11"}}])
+    h.worker.tick()
+    assert h.db.requests[7]["status"] == "failed" and h.spawned == []
+
+
 def test_run_pid_alive_checks_the_command_line():
     import os
     assert not run_pid_alive(os.getpid(), 7)            # 別のコマンド (PID の使い回し) は run とみなさない
@@ -472,6 +499,13 @@ def test_run_pid_alive_checks_the_command_line():
         proc.kill()
         proc.wait()
     assert not run_pid_alive(proc.pid, 7)
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "tools.yahoo_pp.refresh",
+                             "--request-id", "8"])
+    try:
+        assert run_pid_alive(proc.pid, 8)                 # 店舗リスト更新の子プロセスも同じ依頼として見る
+    finally:
+        proc.kill()
+        proc.wait()
 
 
 @pytest.mark.parametrize("params", [

@@ -4,9 +4,9 @@ import pytest
 
 from arbitrage.buyback import Buyback
 from arbitrage.categories import GROUPS
-from arbitrage.research import (DEFAULT_RATES, ParamsError, ResearchParams, build_run_args, buyback_histogram,
-                                buyback_histogram_fields, clean_rates, count_targets, estimate, parse_params,
-                                updated_rates)
+from arbitrage.research import (DEFAULT_RATES, ParamsError, ResearchParams, StoreListParams, build_refresh_args,
+                                build_run_args, buyback_histogram, buyback_histogram_fields, clean_rates,
+                                count_targets, estimate, parse_params, updated_rates)
 from arbitrage.run import parse_args
 
 JST = timezone(timedelta(hours=9))
@@ -197,3 +197,27 @@ def test_count_targets_uses_by_group_when_categories_given():
     assert count_targets(HISTOGRAM, None, None, ("家電",)) == 0                        # by_group の無い古い分布
     p = parse_params({"purchase_date": "2026-10-11", "categories": ["家電"]})
     assert estimate(p, HISTOGRAM_GROUPED, None).jan_count == 110
+
+
+# ---- 依頼の種類 (kind) ----
+
+def test_parse_params_kind_research_is_default_and_explicit():
+    assert parse_params({"purchase_date": "2026-10-11"}) == parse_params({"kind": "research", "purchase_date": "2026-10-11"})
+    assert isinstance(parse_params({"kind": "research", "purchase_date": "2026-10-11"}), ResearchParams)
+
+
+def test_parse_params_kind_store_list():
+    assert parse_params({"kind": "store_list"}) == StoreListParams()
+    assert build_refresh_args(12) == ["--request-id", "12"]
+
+
+@pytest.mark.parametrize("raw, match", [
+    ({"kind": "store_list", "purchase_date": "2026-10-11"}, "条件は付けられない: purchase_date"),
+    ({"kind": "store_list", "categories": None}, "条件は付けられない"),
+    ({"kind": "refresh", "purchase_date": "2026-10-11"}, "kind"),
+    ({"kind": None, "purchase_date": "2026-10-11"}, "kind"),
+    ({"kind": "research"}, "purchase_date"),
+])
+def test_parse_params_rejects_bad_kind(raw, match):
+    with pytest.raises(ParamsError, match=match):
+        parse_params(raw)
