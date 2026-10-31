@@ -71,7 +71,7 @@ def coupon_options(page: ItemPage, cfg: CampaignConfig, coupon: Coupon | None,
     if coupon is not None:
         options.append((coupon.discount, {**coupon.to_json(coupon_detail), "source": "page"}))
     options += [(discount, manual_coupon_json(c, discount))
-                for c, discount in usable_manual_coupons(cfg.coupons, page.store_id, page.price)]
+                for c, discount in usable_manual_coupons(cfg.coupons, page.store_id, page.purchase_price)]
     return options
 
 
@@ -85,10 +85,11 @@ def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignCon
     """
     components = final_components(store, cfg, page)
     buyback_price = candidate["buyback_price"]
-    best = evaluate(page.price, 0, buyback_price, components)
+    price = page.purchase_price   # LYP 会員限定価格があればそれで計算 (購入する端末は会員)
+    best = evaluate(price, 0, buyback_price, components)
     used_discount, used_coupon = 0, None
     for discount, coupon_json in coupon_options(page, cfg, coupon, coupon_detail):
-        with_coupon = evaluate(page.price, discount, buyback_price, components)
+        with_coupon = evaluate(price, discount, buyback_price, components)
         if with_coupon["profit"] > best["profit"]:
             best, used_discount, used_coupon = with_coupon, discount, coupon_json
     if best["effective_price"] <= 0 or best["profit"] < min_profit:
@@ -102,7 +103,7 @@ def build_result(candidate: dict, page: ItemPage, store: Store, cfg: CampaignCon
         "item_code": candidate["item_code"],
         "item_url": candidate["item_url"],
         "sale_price": page.price,
-        "premium_price": page.premium_price,   # LYP 会員限定価格 (参考。計算には使わない)
+        "premium_price": page.premium_price,   # LYP 会員限定価格。あればこれが計算に使った支払額 (sale_price は通常価格)
         "coupon": used_coupon,
         "coupon_discount": used_discount,
         "points": best["points"],
