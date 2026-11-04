@@ -32,6 +32,7 @@ def store_row(sid: str, cat: str, pat: str, dates: list[str], inputs: dict) -> d
         "id": sid, "name": inputs["names"].get(sid, sid), "genre": CAT_NAME.get(cat, cat), "cat": cat,
         "gold": bool(inputs["gold"].get(sid)), "inv": inv.get("f", "?"), "reg": _reg(inv),
         "max_upsell": float(pts["max"]) if pts else None,
+        "pp": pts.get("pp") if pts and isinstance(pts.get("pp"), bool) else None,
         "unknown": pts.get("unknown") if pts else None,
         "n": pts.get("n") if pts else None,
         "n_up": pts.get("n_up") if pts else None,
@@ -55,6 +56,7 @@ def summarize(stores: list[dict]) -> dict:
         "total": len(stores), "qualified": len(qualified), "excluded": len(stores) - len(qualified),
         "gold": sum(1 for s in qualified if s["gold"]),
         "surveyed": sum(1 for s in qualified if s["max_upsell"] is not None),
+        "pp": sum(1 for s in qualified if s["pp"] is True),
         "by_genre": by_genre,
     }
 

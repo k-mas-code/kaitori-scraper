@@ -159,6 +159,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
   - 開始時に前回の json を `data/yahoo_pp/prev/` に退避し `cache/` を消す。失敗 (終了コード 1。HTTP 489 なら「アクセス制限。時間をおいて更新し直す」) ・中止 (終了コード 3) では prev/ を戻し、xlsx も触らない。つまり **途中で止まると取り直しは最初から** (再開なし)
   - 進捗は依頼行の `progress` に `{"kind": "store_list", "stage": fetch / invoice / points / rating / build / done, "done", "total", "eta", "note", "updated_at"}` を 20 秒以上の間隔で書き、同時に `cancel_requested` を読む (店 1 件の区切りで止める)
   - `--upload-only`: 取得・差し替えをせず、いまの `data/yahoo_pp/*.json` からスナップショットを insert するだけ (取得日は sched.json の更新日)。`--print-snapshot`: DB に書かず要約を表示 (接続情報も不要)
+  - PP (プロモーションパッケージ) 加入: 上乗せ調査で開く商品ページの `seller.isPromotionPackageApplied` を `points.json` の `pp` → スナップショットの `stores[].pp` / `summary.pp` に持つ。タブの「プロモーションパッケージ加入のみ」はこれで絞る (未調査 = null は外れる)。**BSPlus 参加には PP 加入が必須なので、調査済みの店はほぼ全て true** (2026-11-04: 945/946)。既存キャッシュから補うだけなら `python -m tools.yahoo_pp.backfill_pp` → `refresh --upload-only` (ネットワークなし)
 
 ### 商品ページの落とし穴 (2026-10-04 調査)
 - ストアクーポンは HTML に無い。`POST /syene-bff/v1/pc/coupon/v3/{店舗ID}/{商品コード}` で取る。ページが発行する匿名 Cookie と `page.crumb` が必要 (無いと 401)

@@ -14,11 +14,12 @@ create table if not exists arbitrage_store_lists (
   period_end    date not null,                 -- 掲載期間 (最後の日)
   -- 掲載日の ISO 文字列の配列。stores[].pat の各文字に対応する
   dates         jsonb not null check (jsonb_typeof(dates) = 'array'),
-  -- {"total", "qualified", "excluded", "gold", "surveyed", "by_genre": {ジャンル名: {"qualified", "gold", "excluded"}}}
+  -- {"total", "qualified", "excluded", "gold", "surveyed", "pp", "by_genre": {ジャンル名: {"qualified", "gold", "excluded"}}}
   summary       jsonb not null check (jsonb_typeof(summary) = 'object'),
   -- 1 要素 = 1 店 (非適格も含む。inv で区別):
   --   {"id", "name", "genre", "cat", "gold", "inv": "Y"|"N"|"?", "reg",
-  --    "max_upsell" (%, 未調査は null), "unknown", "n", "n_up", "reviews": [星5..星1] or null,
+  --    "max_upsell" (%, 未調査は null), "pp" (プロモーションパッケージ加入: true/false, 未調査は null),
+  --    "unknown", "n", "n_up", "reviews": [星5..星1] or null,
   --    "days", "d9", "d4", "first", "last", "pat": "9-4..."}
   stores        jsonb not null check (jsonb_typeof(stores) = 'array'),
   source_sha    text                           -- xlsx の sha256 先頭 16 桁 (無ければ null)
