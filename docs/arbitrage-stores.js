@@ -63,6 +63,7 @@ export function normalizeStore(raw) {
     gold: s.gold === true, inv: ['Y', 'N', '?'].includes(s.inv) ? s.inv : '?', reg: str(s.reg),
     max_upsell: finiteNumber(s.max_upsell), unknown: finiteNumber(s.unknown), n: finiteNumber(s.n), n_up: finiteNumber(s.n_up),
     pp: typeof s.pp === 'boolean' ? s.pp : null,   // プロモーションパッケージ加入 (未調査は null)
+    extra: s.extra === true,                        // 手動追加 (extra_stores.json。BSPlus 一覧に出ない店)
     reviews,
     days: finiteNumber(s.days) ?? 0, d9: finiteNumber(s.d9) ?? 0, d4: finiteNumber(s.d4) ?? 0,
     first: str(s.first), last: str(s.last), pat: str(s.pat),
@@ -402,7 +403,8 @@ export function createStores({ supabase, $root, onRequestQueued }) {
       h('td', { class: 'px-3 py-1.5 min-w-[12rem]' },
         href ? h('a', { href, target: '_blank', rel: 'noopener noreferrer', class: 'text-blue-600 hover:underline font-medium' }, s.name)
           : h('span', { class: 'font-medium' }, s.name),
-        h('div', { class: 'text-xs text-slate-400' }, s.id, s.inv === 'N' ? ' / 非適格' : s.inv === '?' ? ' / 適格不明' : '')),
+        h('div', { class: 'text-xs text-slate-400' }, s.id, s.inv === 'N' ? ' / 非適格' : s.inv === '?' ? ' / 適格不明' : '',
+          s.extra ? ' / 手動追加' : '')),
       h('td', { class: TD }, s.genre || '—'),
       h('td', { class: `${TD} text-center` }, slotCell),
       h('td', { class: `${TD} text-center` }, s.gold ? '○' : ''),

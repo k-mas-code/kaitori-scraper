@@ -47,7 +47,7 @@ def test_build_snapshot_shape_and_summary():
     a = snap["stores"][0]
     assert a == {"id": "a-store", "name": "A 店", "genre": "家電", "cat": "2505", "gold": True, "inv": "Y", "reg": "T123",
                  "max_upsell": 9.0, "pp": True, "unknown": 0, "n": 30, "n_up": 2, "reviews": [10, 5, 1, 0, 0],
-                 "days": 2, "d9": 1, "d4": 1, "first": "2026-10-30", "last": "2026-11-01", "pat": "9-4"}
+                 "days": 2, "d9": 1, "d4": 1, "first": "2026-10-30", "last": "2026-11-01", "pat": "9-4", "extra": False}
     b = snap["stores"][1]
     assert (b["reg"], b["max_upsell"], b["pp"], b["unknown"], b["reviews"], b["gold"]) == ("", None, None, None, None, False)
     assert snap["stores"][2]["inv"] == "N" and snap["stores"][2]["name"] == "非適格"
@@ -378,3 +378,37 @@ def test_load_stores_without_pp_column_gives_none(tmp_path):
     ws.delete_cols(col)
     wb.save(out)
     assert load_stores(TODAY, out).stores["a-store"].pp is None
+
+
+# ---- 手動追加の店 (extras) ----
+
+def test_extras_are_merged_and_kept_with_zero_days(tmp_path):
+    from tools.yahoo_pp import build_xlsx, extras
+    from arbitrage.stores import load_stores
+    data = tmp_path / "data"
+    write_inputs(data)
+    (data / "extra_stores.json").write_text(json.dumps({"x-store": {"cat": "2505", "name": "手動 X"}}), encoding="utf-8")
+    assert extras.apply(data) == 1
+    assert extras.apply(data) == 0   # 2 回目は増えない
+    sched = json.loads((data / "sched.json").read_text(encoding="utf-8"))
+    assert sched["x-store"] == ["2505", "---"] and sched["a-store"] == ["2505", "9-4"]
+    inputs = build_xlsx.load_inputs(data)
+    inputs["invoice"]["x-store"] = {"f": "Y", "reg": "T9"}
+    inputs["points"]["x-store"] = {"max": 0.0, "n": 1, "n_up": 0, "unknown": 0, "detail": {}, "checked": [], "pp": True}
+    snap = build_snapshot(inputs, TODAY)
+    x = next(s for s in snap["stores"] if s["id"] == "x-store")
+    assert (x["days"], x["first"], x["last"], x["extra"], x["pp"]) == (0, None, None, True, True)
+    assert all(s["extra"] is False for s in snap["stores"] if s["id"] != "x-store")
+    assert "none" not in {s["id"] for s in snap["stores"]}   # 掲載 0 日で手動追加でもない店は落ちたまま
+    out = tmp_path / "s.xlsx"
+    build_xlsx.build(out, TODAY, inputs)
+    st = load_stores(TODAY, out).stores["x-store"]
+    assert (st.name, st.genre, st.bsplus_rate, st.pp) == ("手動 X", "家電", 0, True)
+
+
+def test_extras_rejects_bad_file(tmp_path):
+    from tools.yahoo_pp import extras
+    (tmp_path / "extra_stores.json").write_text(json.dumps({"x": {"name": "no cat"}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="cat"):
+        extras.load_extras(tmp_path)
+    assert extras.load_extras(tmp_path / "missing") == {}

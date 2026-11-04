@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from .common import ROOT, Fetcher, RateLimited, check_stop
+from .extras import load_extras, merge_extras
 
 OUT = ROOT / "data" / "yahoo_pp"
 LIST_URL = "https://shopping.yahoo.co.jp/promotion/campaign/bsplus/list/"
@@ -138,11 +139,12 @@ def fetch_schedule(f: Fetcher, today: dt.date, on_progress=None, should_stop=Non
 
 def write_schedule(result: dict, out: Path = OUT) -> None:
     out.mkdir(parents=True, exist_ok=True)
+    # 手動追加の店 (extra_stores.json) を合流させる (掲載パターンは全日 "-")
+    sched, names = merge_extras(result["sched"], result["names"], len(result["dates"]), load_extras(out))
     (out / "dates.json").write_text(json.dumps([d.isoformat() for d in result["dates"]]), encoding="utf-8")
-    (out / "sched.json").write_text(json.dumps(result["sched"], ensure_ascii=False, indent=0), encoding="utf-8")
-    (out / "names.json").write_text(json.dumps(result["names"], ensure_ascii=False, indent=0), encoding="utf-8")
+    (out / "sched.json").write_text(json.dumps(sched, ensure_ascii=False, indent=0), encoding="utf-8")
+    (out / "names.json").write_text(json.dumps(names, ensure_ascii=False, indent=0), encoding="utf-8")
     (out / "counts.json").write_text(json.dumps(result["counts"], indent=1), encoding="utf-8")
-    sched = result["sched"]
     by_cat = {c: sum(1 for v in sched.values() if v[0] == c) for c in CATEGORIES}
     log.info("店舗 %d 件 (%s)。件数不一致 %d。出力: %s", len(sched),
              ", ".join(f"{CATEGORIES[c]} {n}" for c, n in by_cat.items()), result["mismatch"], out)
