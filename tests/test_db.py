@@ -99,3 +99,20 @@ def test_fetch_requests_and_worker_state():
     assert client.queries[-1] == [("table", "arbitrage_worker_state"),
                                   ("upsert", {"heartbeat_at": "2026-10-05T03:00:00+00:00", "singleton": True},
                                    ("on_conflict", "singleton"))]
+
+
+def test_update_run_counts_keeps_status_running():
+    from arbitrage.db import update_run_counts
+    client = RecordingClient([])
+    update_run_counts(client, 7, 12, 3)
+    assert client.queries[0] == [("table", "arbitrage_runs"),
+                                 ("update", {"candidate_count": 12, "result_count": 3}), ("eq", "id", 7)]
+
+
+def test_mark_run_interrupted_and_delete_results_below():
+    client = RecordingClient([])
+    db.mark_run_interrupted(client, 7)
+    assert client.queries[0] == [("table", "arbitrage_runs"), ("update", {"status": "failed"}),
+                                 ("eq", "id", 7), ("eq", "status", "running")]
+    db.delete_results_below(client, 7, -1000)
+    assert client.queries[1] == [("table", "arbitrage_results"), ("delete",), ("eq", "run_id", 7), ("lt", "profit", -1000)]

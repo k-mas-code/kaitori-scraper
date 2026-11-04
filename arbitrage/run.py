@@ -29,7 +29,7 @@ from .coupons import resolve_pp_coupons
 from .describe import print_config  # noqa: F401  (--check-config の表示。テストからも run 経由で使う)
 from .finalize import NOT_PROFITABLE, build_result, skip_reason
 from .prefilter import max_price_rate, price_can_never_pass, select_candidates
-from .progress import (EXIT_CANCELLED, STAGE_API, STAGE_PAGES, STAGE_SAVING, STOP_CANCELLED, STOP_NOTES,
+from .progress import (EXIT_CANCELLED, STAGE_API, STAGE_PAGES, STAGE_SAVING, STOP_CANCELLED, STOP_NOTES, Throttle,
                        Clock, build_reporter, local_now, parse_deadline)
 from .scope import DEFAULT_REACH_SLACK, MAX_REACH_SLACK, PAGE_SCOPES, SCOPE_REACHABLE, plan_page_checks
 from .state import RunState, lock_file
@@ -205,6 +205,71 @@ def apply_pp_coupons(cfg: CampaignConfig, stores: StoreList) -> CampaignConfig:
     else:
         logger.info("対象 pp のクーポン: PP 加入 %d 店に適用 (不明 %d 店は対象外)", len(pp_ids), unknown)
     return replace(cfg, coupons=resolve_pp_coupons(cfg.coupons, pp_ids))
+
+
+PARTIAL_SAVE_INTERVAL = 60.0   # 確定判定の途中結果を DB に書く最短間隔 (秒)
+
+
+class PartialSaver:
+    """確定判定の途中結果を、間隔を空けて DB に upsert する (結果ページに順次出すため)。
+
+    初回に run 行 (status=running) を作って run_id を meta に保存し、以降も最後の保存も同じ run_id に書く
+    (再開しても同じ run に積む)。DB に書けなくてもリサーチ本体は止めない。
+    """
+
+    def __init__(self, client, state: RunState, cfg: CampaignConfig, coupon_margin: float, jan_count: int,
+                 min_profit: int, clock: Clock, interval: float = PARTIAL_SAVE_INTERVAL):
+        self.client, self.state, self.cfg = client, state, cfg
+        self.coupon_margin, self.jan_count, self.min_profit, self.clock = coupon_margin, jan_count, min_profit, clock
+        self.interval = interval
+        self.throttle = Throttle(interval)
+        self.saved_keys: set[tuple[str, str]] = set()
+        self.failures = 0          # 連続失敗の回数。3 回続いたら間隔を 5 倍にして確定判定を遅らせない
+        self.listed = False        # run 行を作って一覧に載せたか (初回は結果 0 件でも載せる)
+
+    def run_id(self) -> int:
+        meta_now = self.state.load_meta()
+        run_id = meta_now.get("run_id")
+        if run_id is None:
+            run_id = db.create_run(self.client, self.cfg.raw, self.coupon_margin, self.jan_count)
+            self.state.save_meta({**meta_now, "run_id": run_id})
+        return run_id
+
+    def maybe_save(self, checked: dict, wanted, candidate_count: int, force: bool = False) -> bool:
+        """間隔が空いていれば (force なら必ず)、まだ書いていない結果行を upsert する。書いたら True"""
+        now = self.clock()
+        if not force and not self.throttle.due(now):
+            return False
+        self.throttle.mark(now)
+        rows = [r["row"] for key, r in checked.items()
+                if key in wanted and key not in self.saved_keys and "row" in r and r["row"]["profit"] >= self.min_profit]
+        total = count_results((r for key, r in checked.items() if key in wanted), self.min_profit)
+        if not rows and self.listed:
+            return False
+        try:
+            run_id = self.run_id()
+            if rows:
+                db.upsert_results(self.client, run_id, rows)
+            db.update_run_counts(self.client, run_id, candidate_count, total)
+        except Exception as e:   # 途中保存に失敗してもリサーチは続ける (最後の保存でまとめて書く)
+            self.failures += 1
+            self.throttle.interval = self.interval * (5 if self.failures >= 3 else 1)
+            logger.warning("途中結果を保存できなかった (リサーチは続ける。最後にまとめて保存する): %s", e)
+            return False
+        self.failures, self.throttle.interval, self.listed = 0, self.interval, True
+        self.saved_keys.update((r["store_id"], r["item_code"]) for r in rows)
+        logger.info("途中結果を保存: run_id=%d, 新たに %d 件 (結果 %d 件)", run_id, len(rows), total)
+        return True
+
+    def mark_interrupted(self) -> None:
+        """中断で戻るとき: 途中結果だけの run を failed にして、結果ページで「実行中」と区別できるようにする"""
+        run_id = self.state.load_meta().get("run_id")
+        if run_id is None:
+            return
+        try:
+            db.mark_run_interrupted(self.client, run_id)
+        except Exception as e:
+            logger.warning("run_id=%d を中断 (failed) にできなかった: %s", run_id, e)
 
 
 def count_results(records, min_profit: int) -> int:
@@ -422,6 +487,13 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
     page_errors = 0
     result_count = count_results((r for key, r in checked.items() if key in wanted), args.min_profit)
     pages_started, pages_processed = clock(), 0
+    # 途中結果の順次保存 (DB を使うときだけ)。接続情報が無ければ最後の保存で同じエラーにする
+    partial: PartialSaver | None = None
+    if not args.no_db and pending_pages:
+        try:
+            partial = PartialSaver(db.get_client(), state, cfg, args.coupon_margin, len(targets), args.min_profit, clock)
+        except db.DbConfigError:
+            partial = None
     if pending_pages:
         reporter.set_stage(STAGE_PAGES, jan_done=len(targets), candidates=len(candidates),
                            pages_total=len(plan.ordered), pages_done=finished, results=result_count)
@@ -439,6 +511,8 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
                 if page_errors >= MAX_CONSECUTIVE_FAILURES:
                     logger.error("中断: 商品ページの読み取り失敗が %d 件続いた (サイトの構造変更の疑い)", page_errors)
                     logger.error("再開: %s", resume_cmd)
+                    if partial is not None:
+                        partial.mark_interrupted()
                     return 1
                 continue
             page_errors = 0
@@ -447,6 +521,8 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
             finished += 1
             pages_processed += 1
             result_count += count_results([record], args.min_profit)
+            if partial is not None:
+                partial.maybe_save(checked, wanted, len(candidates))
             if finished % PROGRESS_EVERY == 0 or finished == len(plan.ordered):
                 profitable = sum(1 for r in checked.values() if r["status"] == "result")
                 logger.info("商品ページ %d/%d 件 完了, 黒字 %d 件 (アクセス %d 回)",
@@ -454,10 +530,14 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
     except Blocked as e:
         logger.error("中断: %s。時間を置いてから再開する", e)
         logger.error("再開: %s", resume_cmd)
+        if partial is not None:
+            partial.mark_interrupted()
         return 1
     except KeyboardInterrupt:
         logger.warning("中断 (商品ページ %d/%d 件 完了)", finished, len(plan.ordered))
         logger.warning("再開: %s", resume_cmd)
+        if partial is not None:
+            partial.mark_interrupted()
         return 130
 
     pages_seconds = (clock() - pages_started).total_seconds()
@@ -482,6 +562,8 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
             logger.warning("未確認の候補 %d 件を残したまま、確認済みの分を保存する。続き: %s", unchecked, resume_cmd)
     elif unchecked:
         logger.warning("未確認の候補が %d 件残っている。やり直す: %s", unchecked, resume_cmd)
+        if partial is not None:
+            partial.mark_interrupted()
         return 1
     for r in rows[:10]:
         logger.info("  %+.1f%% %+d円 %s [%s] 実質%d → %s %d", r["profit_rate"] * 100, r["profit"],
@@ -514,6 +596,8 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
         run_id = db.create_run(client_db, cfg.raw, args.coupon_margin, len(targets))
         state.save_meta({**meta_now, "run_id": run_id})
     saved_count = db.upsert_results(client_db, run_id, rows)
+    # 途中保存や前回の再開で入った、今回の --min-profit 未満の行は消す (result_count とページの件数を合わせる)
+    db.delete_results_below(client_db, run_id, args.min_profit)
     db.finish_run(client_db, run_id, len(candidates), saved_count)
     logger.info("DB 保存: run_id=%d, %d 件", run_id, saved_count)
     reporter.finish(STOP_NOTES.get(stop_reason), results=saved_count)

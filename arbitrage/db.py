@@ -85,6 +85,25 @@ def _missing_column(error: Exception, candidates: tuple[str, ...]) -> str | None
     return next((c for c in candidates if c in text), None)
 
 
+def update_run_counts(client: Client, run_id: int, candidate_count: int, result_count: int) -> None:
+    """途中保存: status は running のまま件数だけ更新する (結果ページの一覧に「実行中 (N 件)」と出る)"""
+    client.table("arbitrage_runs").update({
+        "candidate_count": candidate_count,
+        "result_count": result_count,
+    }).eq("id", run_id).execute()
+
+
+def mark_run_interrupted(client: Client, run_id: int) -> None:
+    """中断 (Blocked / 読み取り失敗 / Ctrl+C) で途中結果だけが入っている run を failed にする。
+    status が running の行だけ。再開して完走すれば finish_run が completed に戻す"""
+    client.table("arbitrage_runs").update({"status": "failed"}).eq("id", run_id).eq("status", "running").execute()
+
+
+def delete_results_below(client: Client, run_id: int, min_profit: int) -> None:
+    """途中保存で入った行のうち、今回の --min-profit 未満の行を消す (再開時に下限を上げた場合の残り)"""
+    client.table("arbitrage_results").delete().eq("run_id", run_id).lt("profit", min_profit).execute()
+
+
 def finish_run(client: Client, run_id: int, candidate_count: int, result_count: int) -> None:
     client.table("arbitrage_runs").update({
         "status": "completed",

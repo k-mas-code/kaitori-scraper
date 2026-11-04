@@ -105,6 +105,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
      - 届きそう = `realistic_gap + 販売価格 × reach_slack >= min(min_profit, 0)`。確認順は `realistic_gap / 販売価格` の大きい順。`--page-scope all` は届きそうな候補を先に、残りを同じ順で続ける
      - 範囲外にした候補は「未確認」のエラーにしない (件数を INFO ログに出して正常終了)。`--page-scope` / `--reach-slack` / `--min-profit` / `--deadline` は再開条件 (meta) に含めないので、同じ run のまま範囲を広げて続きを確認できる
   5. 保存 (`db.py`): `arbitrage_runs` / `arbitrage_results` に service_role キーで upsert
+     - **途中結果の順次保存** (`run.PartialSaver`): 確定判定中、60 秒以上の間隔で新しく出た結果行を同じ run_id に upsert し、`arbitrage_runs` の件数を更新する (status は running のまま)。初回に run 行を作って meta に run_id を保存するので、再開後も同じ run に積む。初回は結果 0 件でも run 行を作って一覧に載せる。失敗してもリサーチは止めず (3 回続いたら間隔 5 分)、最後の保存で全行を書く。中断 (Blocked / 読み取り失敗 / Ctrl+C / 未確認残り) で戻るときは run を `failed` にする (再開して完走すれば completed)。最後の保存で今回の `--min-profit` 未満の行は削除する。`--no-db` では行わない。結果ページは running / failed の run も「実行中・途中 N件」「中断・途中 N件」として一覧に出し、実行中の run を選んでいる間は 30 秒ごとに静かに読み直す (フィルタの選択は保つ。タブが隠れている間は止める)
 - 設定 (`config.py`): 結果ページの「設定」画面で編集 → Supabase `arbitrage_settings` (1 行、`config` jsonb。スキーマは `db/arbitrage_settings.sql`) → 実行時に service_role キーで読む。行が無いとエラーで止まる
   - 中身: `purchase_date` (購入予定日)、`common` (毎日付く分)、`campaigns` (日付指定。`dates` に実行日を含むものだけ有効)、`coupons` (手持ちクーポン。有効期間内のものだけ有効)、`store_upsell` (店ごとのストアポイント上乗せ率。ログイン時だけ表示される分を手で登録し、ページの率と大きい方を使う。有効期間内のものだけ有効)、`bsplus` (上限のみ)。不明なキー・範囲外の値はエラーで止まる
   - **実行日 = `--date` があればそれ、無ければ `purchase_date`**。その日のボーナスストアPlus枠・キャンペーン・クーポンで計算する。買取価格は実行時点の直近 7 日分

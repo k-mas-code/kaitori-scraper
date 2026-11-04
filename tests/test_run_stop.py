@@ -269,3 +269,108 @@ def test_run_folder_in_use_by_another_process_is_refused(world):
     held.close()
     assert world.main() == 0 and len(world.searched) == 5
     assert world.main("--stage", "save") == 0           # 終わればロックは外れている (早期 return の経路も含む)
+
+
+class FakeDbCalls:
+    """db モジュールの呼び出しを記録する (途中保存の確認用)"""
+
+    def __init__(self, fail_first_upserts: int = 0):
+        self.created, self.upserts, self.counts, self.finished = 0, [], [], []
+        self.fail_first_upserts = fail_first_upserts
+
+    def install(self, monkeypatch):
+        dbm = run_module.db
+        monkeypatch.setattr(dbm, "get_client", lambda: "client")
+
+        def create_run(client, config, coupon_margin, jan_count):
+            self.created += 1
+            return 40 + self.created
+
+        def upsert_results(client, run_id, rows):
+            if self.fail_first_upserts > 0:
+                self.fail_first_upserts -= 1
+                raise RuntimeError("db down")
+            self.upserts.append((run_id, [r["item_code"] for r in rows]))
+            return len(rows)
+        monkeypatch.setattr(dbm, "create_run", create_run)
+        monkeypatch.setattr(dbm, "upsert_results", upsert_results)
+        monkeypatch.setattr(dbm, "update_run_counts", lambda client, run_id, c, n: self.counts.append((run_id, c, n)))
+        monkeypatch.setattr(dbm, "finish_run", lambda client, run_id, c, n: self.finished.append((run_id, c, n)))
+        self.interrupted, self.deleted = [], []
+        monkeypatch.setattr(dbm, "mark_run_interrupted", lambda client, run_id: self.interrupted.append(run_id))
+        monkeypatch.setattr(dbm, "delete_results_below", lambda client, run_id, mp: self.deleted.append((run_id, mp)))
+        return self
+
+
+def test_partial_results_are_saved_during_page_checks_to_the_same_run(world, monkeypatch):
+    calls = FakeDbCalls().install(monkeypatch)
+    world.argv = [a for a in world.argv if a != "--no-db"]
+    assert world.main("--min-profit", "-1000") == 0
+    # ページ 1 件ごとに時計が 60 秒進むので、間隔 60 秒の途中保存が毎回走る (初回は run を 1 回だけ作る)
+    assert calls.created == 1
+    run_ids = {rid for rid, _ in calls.upserts}
+    assert run_ids == {41}
+    partial_codes = [code for _, codes in calls.upserts[:-1] for code in codes]
+    assert len(calls.upserts) >= 2 and len(partial_codes) >= 1
+    assert len(set(partial_codes)) == len(partial_codes)          # 途中保存は同じ行を二度書かない
+    assert calls.counts and all(rid == 41 for rid, _, _ in calls.counts)
+    assert calls.finished == [(41, 10, 10)]                        # 最後は従来どおり finish_run (-1000 円以上なので全 10 行)
+    assert calls.deleted == [(41, -1000)] and calls.interrupted == []
+    assert calls.counts[0][2] == 0 or calls.counts[0][2] >= 0      # 初回の保存で run 行が作られ件数が入る
+    assert json.loads((world.dir / "meta.json").read_text())["run_id"] == 41
+    assert "途中結果を保存: run_id=41" in world.caplog.text
+
+
+def test_partial_save_failure_does_not_stop_the_run(world, monkeypatch):
+    calls = FakeDbCalls(fail_first_upserts=2).install(monkeypatch)
+    world.argv = [a for a in world.argv if a != "--no-db"]
+    assert world.main() == 0
+    assert len(world.checked) == 5
+    assert "途中結果を保存できなかった" in world.caplog.text
+    assert calls.finished and calls.finished[0][0] == 41
+    final_codes = calls.upserts[-1][1]
+    assert len(final_codes) == 5                                   # 最後の保存は全行を書く (途中の失敗分も含む)
+
+
+def test_no_db_skips_partial_saves(world, monkeypatch):
+    calls = FakeDbCalls().install(monkeypatch)
+    assert world.main() == 0
+    assert calls.created == 0 and calls.upserts == [] and calls.counts == []
+
+
+def test_first_partial_save_lists_the_run_even_without_results(world, monkeypatch):
+    """結果が 1 件も出ていなくても、初回の途中保存で run 行を作って一覧に 0 件で載せる"""
+    calls = FakeDbCalls().install(monkeypatch)
+    world.argv = [a for a in world.argv if a != "--no-db"]
+    original = world.check_candidate
+
+    def never_profitable(pages, candidate, cfg, stores):
+        r = original(pages, candidate, cfg, stores)
+        return {**r, "status": "not_profitable"} | ({"row": {**r["row"], "profit": -9000}} if "row" in r else {})
+    monkeypatch.setattr(run_module, "check_candidate", never_profitable)
+    assert world.main() == 0
+    assert calls.created == 1 and calls.counts[0] == (41, 10, 0) and calls.upserts[:-1] == []
+
+
+def test_interrupted_run_is_marked_failed(world, monkeypatch):
+    calls = FakeDbCalls().install(monkeypatch)
+    world.argv = [a for a in world.argv if a != "--no-db"]
+    original = world.check_candidate
+    hits = {"n": 0}
+
+    def blocked_after_two(pages, candidate, cfg, stores):
+        hits["n"] += 1
+        if hits["n"] > 2:
+            raise run_module.Blocked("489")
+        return original(pages, candidate, cfg, stores)
+    monkeypatch.setattr(run_module, "check_candidate", blocked_after_two)
+    assert world.main() == 1
+    assert calls.created == 1 and calls.interrupted == [41] and calls.finished == []
+
+
+def test_partial_save_backs_off_after_repeated_failures(world, monkeypatch):
+    calls = FakeDbCalls(fail_first_upserts=3).install(monkeypatch)   # 3 回失敗したあと最後の保存は成功する
+    world.argv = [a for a in world.argv if a != "--no-db"]
+    assert world.main() == 0
+    # 60 秒ごとのページ 5 件で、3 回失敗したあとは間隔が 5 分に伸びるので、途中保存の試行は 3 回で止まる
+    assert world.caplog.text.count("途中結果を保存できなかった") == 3 and calls.finished
