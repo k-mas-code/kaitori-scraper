@@ -353,3 +353,28 @@ def test_backfill_pp_uses_cache_only(tmp_path):
     saved = json.loads((out / "points.json").read_text(encoding="utf-8"))
     assert saved["s1"]["pp"] is False and saved["s2"]["pp"] is None
     assert f.requests_made == 0 and f.misses >= 1
+
+
+def test_build_xlsx_writes_pp_column_and_load_stores_reads_it(tmp_path):
+    from tools.yahoo_pp import build_xlsx
+    from arbitrage.stores import load_stores
+    inputs = {**INPUTS, "points": {**INPUTS["points"],
+                                   "b-store": {"max": 0.0, "n": 1, "n_up": 0, "unknown": 0, "detail": {}, "checked": [], "pp": False}}}
+    out = tmp_path / "s.xlsx"
+    build_xlsx.build(out, TODAY, inputs)
+    stores = load_stores(TODAY, out).stores
+    assert stores["a-store"].pp is True and stores["b-store"].pp is False
+
+
+def test_load_stores_without_pp_column_gives_none(tmp_path):
+    import openpyxl
+    from tools.yahoo_pp import build_xlsx
+    from arbitrage.stores import load_stores, PP_HEADER
+    out = tmp_path / "s.xlsx"
+    build_xlsx.build(out, TODAY, INPUTS)
+    wb = openpyxl.load_workbook(out)
+    ws = wb["ポイント上乗せ調査"]
+    col = next(c for c in range(1, ws.max_column + 1) if ws.cell(row=4, column=c).value == PP_HEADER)
+    ws.delete_cols(col)
+    wb.save(out)
+    assert load_stores(TODAY, out).stores["a-store"].pp is None

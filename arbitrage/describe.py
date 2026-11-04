@@ -62,7 +62,14 @@ def print_config(settings: Settings, cfg: CampaignConfig, stores: StoreList, sou
     print(f"\n[coupons] {stores.run_date} に使える手持ちクーポン (1 注文 1 枚、併用なし)"
           + ("" if cfg.coupons else " (なし)"))
     for c in cfg.coupons:
-        target = describe_stores(c.store_ids, stores) if c.target == "stores" else TARGET_LABELS["all"]
+        if c.target == "stores":
+            target = describe_stores(c.store_ids, stores)
+        elif c.target == "pp":
+            pp_n = sum(1 for s in stores.stores.values() if s.pp is True)
+            unknown_n = sum(1 for s in stores.stores.values() if s.pp is None)
+            target = f"PP (プロモーションパッケージ) 加入店: 店舗リストで ○ の {pp_n} 店 (不明 {unknown_n} 店は対象外)"
+        else:
+            target = TARGET_LABELS["all"]
         print(f"  - {c.name}: {describe_coupon(c)}\n      対象: {target}")
     print(f"  期間外で無効: {len(settings.coupons) - len(cfg.coupons)} 件")
     print(f"\n[store_upsell] {stores.run_date} に有効な店ごとのポイント上乗せ (ログイン時だけ表示される分。"

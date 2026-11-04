@@ -6,7 +6,7 @@
 
 arbitrage/stores.py が読む構造 (変えるときは stores.py も直す):
   全ジャンル            1 行目=全体加算/休みの印, 2 行目=ヘッダー (ジャンル/ストア名/ストアID/優良ストア/初回掲載日/最終掲載日 + 「M/D\\n曜」の日付列), 値 9 / 4 / 空欄
-  ポイント上乗せ調査    4 行目=ヘッダー (ストアID / 最大上乗せ率 (小数) / 判定できなかった商品数)
+  ポイント上乗せ調査    4 行目=ヘッダー (ストアID / 最大上乗せ率 (小数) / 判定できなかった商品数 / PP加入 (○/×/空欄))
   除外リスト（非適格）  2 行目=ヘッダー (ストアID)
 """
 
@@ -84,6 +84,11 @@ def parse_days(spec: str | None, dates: list[dt.date]) -> set[dt.date]:
             raise SystemExit(f"--plus 指定 {tok} は掲載期間に無い")
         out.add(hit[0])
     return out
+
+
+def pp_mark(pp: object) -> str:
+    """PP 加入の xlsx 表記 (arbitrage/stores.py が読む): True=○ / False=× / 不明=空欄"""
+    return "○" if pp is True else "×" if pp is False else ""
 
 
 def pattern_type(pat: str, off: set[int]) -> str:
@@ -258,8 +263,9 @@ def build(out: Path, today: dt.date, inputs: dict, plus2_spec: str | None = None
     pws["A3"] = "判定できなかった商品数 = 未確認で、一覧の率 − 4% が最大上乗せ率を超える商品 (この店の上乗せが最大値より高い可能性がある)"
     pws["A3"].font = f_note
     ph = ["ジャンル", "ストア名", "ストアID", "ストアURL", "レビュー件数", "平均評価", "本日のBSPlus枠", "調査商品数",
-          "上乗せあり商品数", "上乗せありの割合", "最大上乗せ率", "上乗せ率の内訳", "判定できなかった商品数", "確認した商品 (一覧の率→上乗せ)"]
-    pwidth = [29, 40, 22, 46, 11, 9, 12, 10, 12, 12, 12, 30, 14, 36]
+          "上乗せあり商品数", "上乗せありの割合", "最大上乗せ率", "上乗せ率の内訳", "判定できなかった商品数", "確認した商品 (一覧の率→上乗せ)",
+          "PP加入"]
+    pwidth = [29, 40, 22, 46, 11, 9, 12, 10, 12, 12, 12, 30, 14, 36, 8]
     for c, h in enumerate(ph, 1):
         cell = pws.cell(row=4, column=c, value=h)
         cell.font, cell.fill, cell.alignment = f_head, fill_head, head_align
@@ -276,7 +282,8 @@ def build(out: Path, today: dt.date, inputs: dict, plus2_spec: str | None = None
         detail = "、".join(f"{k}×{v}" for k, v in sorted(p["detail"].items(), key=lambda kv: -float(kv[0].strip("+%"))))
         checked = "、".join(f"{a:g}%→+{b:g}%" for a, b in p.get("checked", []))
         vals = [r["genre"], r["name"], r["id"], r["url"], n_rev, avg, f"+{slot}%" if slot != "-" else "",
-                p["n"], p["n_up"], (p["n_up"] / p["n"]) if p["n"] else None, p["max"] / 100, detail, p["unknown"], checked]
+                p["n"], p["n_up"], (p["n_up"] / p["n"]) if p["n"] else None, p["max"] / 100, detail, p["unknown"], checked,
+                pp_mark(p.get("pp"))]
         for c, v in enumerate(vals, 1):
             cell = pws.cell(row=prow, column=c, value=v)
             cell.font = f_base

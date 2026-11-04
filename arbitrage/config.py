@@ -27,8 +27,9 @@ TARGET_BSPLUS_GOOD = "bsplus_good"  # 枠があり、かつ優良ストア
 TARGET_GOOD_STORE = "good_store"    # 優良ストア
 TARGET_PAGE = "page"                # 商品ページのポイント内訳にその行が出ている店
 TARGET_STORES = "stores"            # store_ids の店
+TARGET_PP = "pp"                    # プロモーションパッケージ加入店 (店舗リストの「PP加入」が ○ の店。モールクーポンの対象)
 TARGET_KINDS = (TARGET_ALL, TARGET_BSPLUS, TARGET_BSPLUS_GOOD, TARGET_GOOD_STORE, TARGET_PAGE, TARGET_STORES)
-COUPON_TARGETS = (TARGET_ALL, TARGET_STORES)
+COUPON_TARGETS = (TARGET_ALL, TARGET_STORES, TARGET_PP)
 
 COUPON_FIXED = "fixed"      # 定額
 COUPON_PERCENT = "percent"  # 定率

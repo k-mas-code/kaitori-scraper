@@ -20,6 +20,8 @@ SHEET_UPSELL = "ポイント上乗せ調査"
 SHEET_EXCLUDED = "除外リスト（非適格）"
 # 上乗せ調査シートに無い店の最大上乗せ率 (絞り込み用の上限値)
 DEFAULT_MAX_UPSELL = Decimal("0.14")
+# 上乗せ調査シートの PP (プロモーションパッケージ) 加入列。○ = 加入 / × = 非加入 / 空欄 = 不明
+PP_HEADER = "PP加入"
 
 # 日別列のヘッダーは「10/4\n日」の形 (「10/4以降も掲載予定」等の列と区別する)
 DATE_HEADER_RE = re.compile(r"^\s*(\d{1,2})/(\d{1,2})\s*[月火水木金土日]\s*$")
@@ -37,6 +39,7 @@ class Store:
     good_store: bool
     bsplus_rate: Decimal          # 実行日のボーナスストアPlus枠 (0 / 0.04 / 0.09)
     max_upsell: Decimal           # ストアポイント上乗せ率の上限 (絞り込み用)
+    pp: bool | None = None        # プロモーションパッケージ加入 (上乗せ調査の「PP加入」列。無い・空欄は None)
 
 
 @dataclass(frozen=True)
@@ -79,10 +82,15 @@ def load_stores(run_date: date, path: Path = DEFAULT_STORES_PATH) -> StoreList:
     rows = list(wb[SHEET_UPSELL].iter_rows(values_only=True))
     col_id, col_max = _header_index(rows[3], "ストアID"), _header_index(rows[3], "最大上乗せ率")
     col_unknown = _header_index(rows[3], "判定できなかった商品数")
+    col_pp = next((i for i, h in enumerate(rows[3]) if str(h or "").strip() == PP_HEADER), None)   # 古いリストには無い
     max_upsell: dict[str, Decimal] = {}
+    pp_flags: dict[str, bool | None] = {}
     for r in rows[4:]:
         if not r[col_id]:
             continue
+        if col_pp is not None:
+            mark = str(r[col_pp] or "").strip() if col_pp < len(r) else ""
+            pp_flags[str(r[col_id]).strip()] = True if mark == "○" else False if mark == "×" else None
         surveyed = Decimal(str(r[col_max] or 0))
         if not 0 <= surveyed <= 1:
             raise StoreListError(f"{r[col_id]}: 最大上乗せ率が想定外の値 {r[col_max]!r} (0.14 = 14%)")
@@ -129,6 +137,7 @@ def load_stores(run_date: date, path: Path = DEFAULT_STORES_PATH) -> StoreList:
             good_store=str(r[col_good] or "").strip() == "○",
             bsplus_rate=bsplus,
             max_upsell=max_upsell.get(store_id, DEFAULT_MAX_UPSELL),
+            pp=pp_flags.get(store_id),
         )
     if not stores:
         raise StoreListError("店舗が 1 件も読めなかった")

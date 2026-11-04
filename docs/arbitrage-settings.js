@@ -10,7 +10,7 @@ const CAMPAIGN_TARGETS = [
   ['page', '商品ページに行が出ている店'],
   ['stores', '店IDを指定'],
 ];
-const COUPON_TARGETS = [['all', 'すべての店'], ['stores', '店IDを指定']];
+const COUPON_TARGETS = [['all', 'すべての店'], ['pp', 'PP 加入店 (モールクーポン)'], ['stores', '店IDを指定']];
 const COUPON_TYPES = [['fixed', '定額 (円)'], ['percent', '定率 (%)']];
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -188,7 +188,7 @@ export function configToDraft(config, today) {
       value: row.type === 'percent' ? rateToPercent(row.value) : str(row.value),
       max_discount: str(row.max_discount),
       min_purchase: str(row.min_purchase),
-      target: row.target === 'stores' ? 'stores' : 'all',
+      target: has(COUPON_TARGETS, row.target) ? row.target : 'all',
       store_ids: storeIdsDraft(row.store_ids),
       valid_from: str(row.valid_from), valid_until: str(row.valid_until),
     })),

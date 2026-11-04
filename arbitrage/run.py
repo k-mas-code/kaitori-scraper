@@ -24,7 +24,8 @@ from .buyback import Buyback, load_buyback_prices, load_categories, read_credent
 from .categories import GROUP_OTHER, GROUPS
 from . import db
 from .config import (ROOT, CampaignConfig, ConfigError, Settings, active_config, load_settings_file,
-                     parse_settings, TARGET_PAGE)
+                     parse_settings, TARGET_PAGE, TARGET_PP)
+from .coupons import resolve_pp_coupons
 from .describe import print_config  # noqa: F401  (--check-config の表示。テストからも run 経由で使う)
 from .finalize import NOT_PROFITABLE, build_result, skip_reason
 from .prefilter import max_price_rate, price_can_never_pass, select_candidates
@@ -192,6 +193,20 @@ def load_settings(config_file: Path | None) -> tuple[Settings, str]:
         raise ConfigError(f"Supabase の設定: {e}") from e
 
 
+def apply_pp_coupons(cfg: CampaignConfig, stores: StoreList) -> CampaignConfig:
+    """target=pp (プロモーションパッケージ加入店) のクーポンを、店舗リストの PP 加入店に展開する。
+    meta (再開条件) は cfg.raw なので、展開しても再開条件は変わらない"""
+    if not any(c.target == TARGET_PP for c in cfg.coupons):
+        return cfg
+    pp_ids = frozenset(s.store_id for s in stores.stores.values() if s.pp is True)
+    unknown = sum(1 for s in stores.stores.values() if s.pp is None)
+    if not pp_ids:
+        logger.warning("PP 加入店が店舗リストに 1 件も無い (「PP加入」列が無い古いリスト?)。対象 pp のクーポンはどの店にも使わない")
+    else:
+        logger.info("対象 pp のクーポン: PP 加入 %d 店に適用 (不明 %d 店は対象外)", len(pp_ids), unknown)
+    return replace(cfg, coupons=resolve_pp_coupons(cfg.coupons, pp_ids))
+
+
 def count_results(records, min_profit: int) -> int:
     """利益が min_profit 以上の件数 (惜しい赤字の row も数える)"""
     return sum(1 for r in records if "row" in r and r["row"]["profit"] >= min_profit)
@@ -218,8 +233,9 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
         settings, source = load_settings(args.config_file)
         # 実行日: --date があればそれ、無ければ設定の購入予定日
         run_date = args.date or settings.purchase_date
-        cfg = active_config(settings, run_date)
+        cfg_active = active_config(settings, run_date)
         stores = load_stores(run_date)
+        cfg = apply_pp_coupons(cfg_active, stores)   # target=pp のクーポンを PP 加入店に展開 (表示用には展開前を残す)
     except (ConfigError, StoreListError) as e:
         logger.error("%s", e)
         return 2
@@ -230,7 +246,7 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
     logger.info("stores: %d (うち %s のボーナスストアPlus枠あり %d)", len(stores.stores), run_date, bsplus_stores)
 
     if args.check_config:
-        print_config(settings, cfg, stores, source)
+        print_config(settings, cfg_active, stores, source)
         return 0
 
     try:
