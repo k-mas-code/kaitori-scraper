@@ -26,6 +26,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .common import ROOT
+from .extras import load_extras
 
 IN = Path(os.environ.get("YAHOO_PP_DIR") or ROOT / "data" / "yahoo_pp")
 DEFAULT_OUT = ROOT / "data" / "yahoo_pp_stores_5genres.xlsx"
@@ -69,8 +70,10 @@ def load(name: str, in_dir: Path = IN) -> dict:
 
 def load_inputs(in_dir: Path = IN) -> dict:
     """dates.json 〜 points.json をまとめて読む (snapshot / build が同じ入力を使う)"""
-    return {name: load(f"{name}.json", in_dir)
-            for name in ("dates", "sched", "names", "invoice", "gold", "reviews", "points")}
+    inputs = {name: load(f"{name}.json", in_dir)
+              for name in ("dates", "sched", "names", "invoice", "gold", "reviews", "points")}
+    inputs["extra"] = load_extras(in_dir)   # 手動追加の店 (掲載日 0 日でも落とさない)
+    return inputs
 
 
 def parse_days(spec: str | None, dates: list[dt.date]) -> set[dt.date]:
@@ -127,10 +130,11 @@ def build(out: Path, today: dt.date, inputs: dict, plus2_spec: str | None = None
     off = {k for k, ch in enumerate(top_pat) if ch == "-"} if top_n >= 20 and "-" in top_pat else set()
     off_dates = {dates[k] for k in off}
 
+    extra = inputs.get("extra") or {}
     recs = []
     for sid, (cat, pat) in sched.items():
         on = [i for i, ch in enumerate(pat) if ch != "-"]
-        if not on:
+        if not on and sid not in extra:
             continue
         invf = inv.get(sid, {}).get("f", "?")
         reg = inv.get(sid, {}).get("reg", "-")
@@ -138,11 +142,11 @@ def build(out: Path, today: dt.date, inputs: dict, plus2_spec: str | None = None
             "genre": CAT_NAME[cat], "cat": cat, "name": names.get(sid, sid), "id": sid,
             "url": f"https://store.shopping.yahoo.co.jp/{sid}/",
             "days": len(on), "d9": pat.count("9"), "d4": pat.count("4"),
-            "first": dates[on[0]], "last": dates[on[-1]],
-            "future": "○" if dates[on[-1]] >= today else "",
+            "first": dates[on[0]] if on else None, "last": dates[on[-1]] if on else None,
+            "future": "○" if on and dates[on[-1]] >= today else "",
             "next": next((dates[i] for i in on if dates[i] >= today), None),
             "rest": sum(1 for i in on if dates[i] >= today),
-            "ptype": pattern_type(pat, off) if off else "",
+            "ptype": pattern_type(pat, off) if off and on else ("手動追加" if sid in extra else ""),
             "gold": "○" if gold.get(sid) else "",
             "inv": invf, "reg": reg if reg != "-" else "", "pat": pat,
         })

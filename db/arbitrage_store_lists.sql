@@ -20,7 +20,7 @@ create table if not exists arbitrage_store_lists (
   --   {"id", "name", "genre", "cat", "gold", "inv": "Y"|"N"|"?", "reg",
   --    "max_upsell" (%, 未調査は null), "pp" (プロモーションパッケージ加入: true/false, 未調査は null),
   --    "unknown", "n", "n_up", "reviews": [星5..星1] or null,
-  --    "days", "d9", "d4", "first", "last", "pat": "9-4..."}
+  --    "days", "d9", "d4", "first", "last", "pat": "9-4...", "extra" (手動追加の店。掲載 0 日で first/last は null)}
   stores        jsonb not null check (jsonb_typeof(stores) = 'array'),
   source_sha    text                           -- xlsx の sha256 先頭 16 桁 (無ければ null)
 );

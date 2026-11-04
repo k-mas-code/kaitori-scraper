@@ -21,9 +21,9 @@ def _reg(inv: dict) -> str:
 
 
 def store_row(sid: str, cat: str, pat: str, dates: list[str], inputs: dict) -> dict | None:
-    """1 店ぶん。掲載日が 1 日も無い店は None"""
+    """1 店ぶん。掲載日が 1 日も無い店は None (手動追加 inputs["extra"] の店は残す)"""
     on = [i for i, ch in enumerate(pat) if ch != "-"]
-    if not on:
+    if not on and sid not in (inputs.get("extra") or {}):
         return None
     inv = inputs["invoice"].get(sid) or {}
     pts = inputs["points"].get(sid)
@@ -38,7 +38,8 @@ def store_row(sid: str, cat: str, pat: str, dates: list[str], inputs: dict) -> d
         "n_up": pts.get("n_up") if pts else None,
         "reviews": list(reviews) if reviews else None,
         "days": len(on), "d9": pat.count("9"), "d4": pat.count("4"),
-        "first": dates[on[0]], "last": dates[on[-1]], "pat": pat,
+        "first": dates[on[0]] if on else None, "last": dates[on[-1]] if on else None, "pat": pat,
+        "extra": sid in (inputs.get("extra") or {}),
     }
 
 
