@@ -147,3 +147,31 @@ def test_no_coupon_is_chosen_when_coupons_break_min_purchase():
     small = ManualCoupon("手持ち 400円OFF", "fixed", 400)
     row = build_result(candidate(p, 3500), p, store, cfg(manual, small, campaigns=[big]), page_coupon, None)
     assert row["coupon"]["name"] == "手持ち 400円OFF" and row["coupon_discount"] == 400
+
+
+# ---- target=pp (プロモーションパッケージ加入店) ----
+
+def test_pp_coupon_resolves_to_pp_store_ids_and_matches_only_them():
+    from arbitrage.coupons import resolve_pp_coupons
+    from arbitrage.config import TARGET_PP
+    pp = ManualCoupon(name="モール", type="percent", value=Decimal("0.1"), max_discount=3000, target=TARGET_PP)
+    keep = ManualCoupon(name="J", type="fixed", value=2000, target="stores", store_ids=("joshin",))
+    resolved = resolve_pp_coupons((pp, keep), frozenset({"b-store", "a-store"}))
+    assert resolved[0].target == "stores" and resolved[0].store_ids == ("a-store", "b-store")
+    assert resolved[1] == keep
+    assert manual_discount(resolved[0], "a-store", 10000) == 1000
+    assert manual_discount(resolved[0], "other", 10000) == 0
+    # PP 加入店が無ければどこにも使えない
+    none = resolve_pp_coupons((pp,), frozenset())
+    assert none[0].store_ids == () and manual_discount(none[0], "a-store", 10000) == 0
+
+
+def test_settings_accept_pp_target_for_coupons_only():
+    import pytest
+    from arbitrage.config import ConfigError
+    base = {"version": 1, "purchase_date": "2026-10-05", "common": [], "campaigns": [], "bsplus": {},
+            "coupons": [{"name": "モール", "type": "percent", "value": 0.1, "target": "pp"}]}
+    s = parse_settings(base)
+    assert s.coupons[0].target == "pp" and s.coupons[0].store_ids == ()
+    with pytest.raises(ConfigError, match="target"):
+        parse_settings({**base, "coupons": [], "campaigns": [{"name": "x", "rate": 0.01, "target": "pp", "dates": ["2026-10-05"]}]})

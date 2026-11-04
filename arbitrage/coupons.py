@@ -6,7 +6,16 @@
 
 from __future__ import annotations
 
-from .config import COUPON_FIXED, TARGET_STORES, ManualCoupon
+from dataclasses import replace
+
+from .config import COUPON_FIXED, TARGET_PP, TARGET_STORES, ManualCoupon
+
+
+def resolve_pp_coupons(coupons: tuple[ManualCoupon, ...], pp_store_ids: frozenset[str]) -> tuple[ManualCoupon, ...]:
+    """target=pp のクーポンを、店舗リストで PP 加入 (○) の店を store_ids にした target=stores に置き換える。
+    以降の判定は store_ids だけで済む。PP 加入の店が 1 件も無ければそのクーポンはどの店にも使えない"""
+    return tuple(replace(c, target=TARGET_STORES, store_ids=tuple(sorted(pp_store_ids))) if c.target == TARGET_PP else c
+                 for c in coupons)
 
 
 def manual_discount(coupon: ManualCoupon, store_id: str, price: int) -> int:

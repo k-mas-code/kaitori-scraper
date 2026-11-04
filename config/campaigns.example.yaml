@@ -126,7 +126,8 @@
 #                           例) 「10% OFF、最大 3,000 円引き」なら value: 0.1 / max_discount: 3000
 #   min_purchase    省略可  最低購入額 (円、税込の販売価格)。条件なしなら 0
 #                           例) 「60,000 円以上で使える」なら 60000
-#   target          省略可  all (すべての店) か stores (store_ids の店だけ)。省略すると all
+#   target          省略可  all (すべての店) / pp (プロモーションパッケージ加入店 = 店舗リストの「PP加入」が ○ の店。
+#                           モールクーポンはこれ) / stores (store_ids の店だけ)。省略すると all
 #   store_ids       target: stores のとき必須 (1 件以上)
 #   valid_from      省略可  有効期間の開始日 (YYYY-MM-DD)。制限なしなら null
 #   valid_until     省略可  有効期間の終了日 (YYYY-MM-DD、その日も使える)。制限なしなら null
@@ -267,7 +268,7 @@ coupons:
   #   value: 0.1
   #   max_discount: 3000
   #   min_purchase: 10000
-  #   target: all
+  #   target: pp                  # モールクーポンは PP 加入店が対象
   #   valid_from: 2026-10-10
   #   valid_until: 2026-10-11
 

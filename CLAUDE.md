@@ -117,7 +117,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
   - ボーナスストアPlus (+4% / +9%): 店舗リストの実行日の枠
   - それ以外 (PayPay、LYP、日曜 +5% など): 設定の `common` / `campaigns`。対象ストア限定のものは `target: page` (商品ページの内訳にその行が出ている店)
   - **全体加算日の +2% / +3% は自動では付かない**。別々の上限を持つ独立したキャンペーンなので `campaigns` に `target: bsplus` (+2%) と `target: bsplus_good` (+3%、枠あり かつ 優良ストア) の 2 行で登録する (優良ストアには両方付く)。店舗リスト 1 行目の「+2」「+2/+3」表記は計算に使わない
-- 手持ちクーポン (`coupons.py`): 設定の `coupons` (定額 / 定率、最低購入額、対象店、有効期間)。値引き額が販売価格以上になる商品には使わない。結果行の `coupon` は `source` が `manual` (手持ち) か `page` (ページの公開クーポン)
+- 手持ちクーポン (`coupons.py`): 設定の `coupons` (定額 / 定率、最低購入額、対象店、有効期間)。対象 `target` は `all` / `stores` / `pp` (プロモーションパッケージ加入店。**モールクーポンはこれ**。店舗リスト xlsx「ポイント上乗せ調査」の「PP加入」列が ○ の店に `run.apply_pp_coupons` が展開する。列が無い古いリストや空欄の店は対象外。再開条件 meta.config は展開前の raw なので変わらない)。値引き額が販売価格以上になる商品には使わない。結果行の `coupon` は `source` が `manual` (手持ち) か `page` (ページの公開クーポン)
 - クーポン一覧: 確定判定で見つけたクーポンは、その商品に使えないものも含めて `data/arbitrage/{run名}/coupons.csv` に出力する (店舗 × クーポン単位)
 - 再開: 状態は `data/arbitrage/{run名}/` (`meta.json` / `buyback.json` / `api.jsonl` / `pages.jsonl`)。中断時のログに出る「再開」コマンドで続きから。条件 (実行日・その日に有効な設定・店舗リスト) を変えたら `--run-name` で別名にする (日付外のキャンペーン・クーポンの編集は影響しない)
 - 結果ページ `docs/arbitrage.html`: Supabase Auth のメールリンクでログイン。RLS でオーナー (`arbitrage_owner` の 1 行) だけが読める。スキーマは `db/arbitrage.sql`

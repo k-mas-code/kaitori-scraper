@@ -164,3 +164,20 @@ def test_manual_coupon_keeps_paging_alive():
     record = search_one_jan(client, b, cfg, STORES, 0.2, max_price_rate(cfg, STORES))
     assert len(client.calls) == 4
     assert any(c["sale_price"] >= 25000 for c in record["candidates"])
+
+
+def test_apply_pp_coupons_expands_to_pp_stores(caplog):
+    from dataclasses import replace
+    from arbitrage.config import ManualCoupon, TARGET_PP
+    from arbitrage.run import apply_pp_coupons
+    import arbitrage.run as run_mod
+    from arbitrage.stores import Store, StoreList
+    stores = StoreList({"p1": Store("p1", "p1", "家電", False, Decimal(0), Decimal("0.14"), pp=True),
+                        "n1": Store("n1", "n1", "家電", False, Decimal(0), Decimal("0.14"), pp=False),
+                        "u1": Store("u1", "u1", "家電", False, Decimal(0), Decimal("0.14"))},
+                       STORES.run_date, None, "x.xlsx")
+    cfg = replace(CFG, coupons=(ManualCoupon(name="モール", type="fixed", value=500, target=TARGET_PP),))
+    out = apply_pp_coupons(cfg, stores)
+    assert out.coupons[0].target == "stores" and out.coupons[0].store_ids == ("p1",)
+    assert out.raw == cfg.raw   # 再開条件は変わらない
+    assert apply_pp_coupons(CFG, stores) is CFG
