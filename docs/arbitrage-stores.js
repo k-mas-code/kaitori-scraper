@@ -62,6 +62,7 @@ export function normalizeStore(raw) {
     id: str(s.id), name: str(s.name) || str(s.id), genre: str(s.genre), cat: str(s.cat),
     gold: s.gold === true, inv: ['Y', 'N', '?'].includes(s.inv) ? s.inv : '?', reg: str(s.reg),
     max_upsell: finiteNumber(s.max_upsell), unknown: finiteNumber(s.unknown), n: finiteNumber(s.n), n_up: finiteNumber(s.n_up),
+    pp: typeof s.pp === 'boolean' ? s.pp : null,   // プロモーションパッケージ加入 (未調査は null)
     reviews,
     days: finiteNumber(s.days) ?? 0, d9: finiteNumber(s.d9) ?? 0, d4: finiteNumber(s.d4) ?? 0,
     first: str(s.first), last: str(s.last), pat: str(s.pat),
@@ -94,13 +95,14 @@ export function nextListedDate(store, dates, todayIsoText) {
   return null;
 }
 
-/** 絞り込み。filters: { genre, qualifiedOnly, goldOnly, slot ('any'|'9'|'4'|'has'), minUpsell (数値 or null), text } */
+/** 絞り込み。filters: { genre, qualifiedOnly, goldOnly, ppOnly, slot ('any'|'9'|'4'|'has'), minUpsell (数値 or null), text } */
 export function filterStores(stores, dates, filters, todayIsoText) {
   const text = str(filters.text).trim().toLowerCase();
   return stores.filter((s) => {
     if (filters.genre && s.genre !== filters.genre) return false;
     if (filters.qualifiedOnly && s.inv === 'N') return false;   // 適格不明 (?) は run と同じく適格側に数える
     if (filters.goldOnly && !s.gold) return false;
+    if (filters.ppOnly && s.pp !== true) return false;   // 未調査 (null) は加入と確認できないので外す
     if (filters.slot !== 'any') {
       const slot = slotOn(s, dates, todayIsoText);
       if (filters.slot === 'has' ? !(slot === '9' || slot === '4') : slot !== filters.slot) return false;
@@ -148,7 +150,7 @@ const emptyState = () => ({
   latestRequest: null,   // kind = store_list の最新の依頼
   activeRequest: null,   // 待ち・実行中の依頼 (kind 問わず)
   requestsError: false,
-  filters: { genre: '', qualifiedOnly: true, goldOnly: false, slot: 'any', minUpsell: null, text: '' },
+  filters: { genre: '', qualifiedOnly: true, goldOnly: false, ppOnly: false, slot: 'any', minUpsell: null, text: '' },
   expandedId: null,
 });
 
@@ -240,7 +242,8 @@ export function createStores({ supabase, $root, onRequestQueued }) {
           h('input', { type: 'search', autocomplete: 'off', placeholder: '部分一致', class: INPUT, dataset: { filter: 'text' }, value: f.text }))),
       h('div', { class: 'mt-3 flex flex-wrap gap-4' },
         check('qualifiedOnly', '非適格 (インボイス) を除く', f.qualifiedOnly),
-        check('goldOnly', '優良ストアのみ', f.goldOnly)));
+        check('goldOnly', '優良ストアのみ', f.goldOnly),
+        check('ppOnly', 'プロモーションパッケージ加入のみ', f.ppOnly)));
     // select の value は option を入れた後に設定する
     ui.filters.querySelector('[data-filter="genre"]').value = genres.includes(f.genre) ? f.genre : '';
     ui.filters.querySelector('[data-filter="slot"]').value = f.slot;
@@ -253,7 +256,7 @@ export function createStores({ supabase, $root, onRequestQueued }) {
     return {
       genre: $f('genre').value, slot: $f('slot').value,
       minUpsell: Number.isFinite(upsell) ? upsell : null, text: $f('text').value,
-      qualifiedOnly: $f('qualifiedOnly').checked, goldOnly: $f('goldOnly').checked,
+      qualifiedOnly: $f('qualifiedOnly').checked, goldOnly: $f('goldOnly').checked, ppOnly: $f('ppOnly').checked,
     };
   }
 
@@ -288,9 +291,9 @@ export function createStores({ supabase, $root, onRequestQueued }) {
         list.source_sha && h('span', { class: 'text-xs text-slate-400' }, `xlsx ${str(list.source_sha)}`)),
       !inPeriod && h('p', { class: 'mt-2 text-sm font-semibold text-red-600', role: 'alert' },
         `今日 (${monthDay(today)}) は掲載期間の外。更新が必要です。`),
-      h('div', { class: 'grid gap-3 grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 mt-3' },
+      h('div', { class: 'grid gap-3 grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 mt-3' },
         stat('全店', count('total')), stat('適格', count('qualified')), stat('非適格', count('excluded')),
-        stat('優良', count('gold')), stat('上乗せ調査済み', count('surveyed')),
+        stat('優良', count('gold')), stat('上乗せ調査済み', count('surveyed')), stat('PP 加入', count('pp')),
         stat('今日 +9%', inPeriod ? num(todaySlots[9]) : '—', inPeriod ? null : '期間外', 'text-rose-700'),
         stat('今日 +4%', inPeriod ? num(todaySlots[4]) : '—', inPeriod ? null : '期間外', 'text-amber-700')),
       byGenre.length > 0 && h('table', { class: 'mt-3 text-sm' },
@@ -403,6 +406,7 @@ export function createStores({ supabase, $root, onRequestQueued }) {
       h('td', { class: TD }, s.genre || '—'),
       h('td', { class: `${TD} text-center` }, slotCell),
       h('td', { class: `${TD} text-center` }, s.gold ? '○' : ''),
+      h('td', { class: `${TD} text-center` }, s.pp === true ? '○' : s.pp === false ? h('span', { class: 'text-slate-300' }, '×') : ''),
       h('td', { class: `${TD} text-right` }, percentText(s.max_upsell),
         s.n !== null && h('span', { class: 'text-xs text-slate-400 ml-1' }, `(${num(s.n_up ?? 0)}/${num(s.n)})`)),
       h('td', { class: `${TD} text-right` }, s.unknown === null ? '—' : num(s.unknown)),
@@ -420,7 +424,7 @@ export function createStores({ supabase, $root, onRequestQueued }) {
         h('span', {}, monthDay(d)), h('span', { class: 'font-semibold' }, slot === '-' ? '−' : `+${slot}`));
     });
     return h('tr', { class: 'detail-row bg-slate-50 border-t border-slate-100' },
-      h('td', { colSpan: 9, class: 'px-3 py-2' },
+      h('td', { colSpan: 10, class: 'px-3 py-2' },
         h('div', { class: 'flex flex-wrap gap-1' }, chips),
         h('div', { class: 'text-xs text-slate-500 mt-2' },
           `初回 ${str(s.first) || '—'} / 最終 ${str(s.last) || '—'} / カテゴリ ${s.cat || '—'}${s.reg ? ` / 登録番号 ${s.reg}` : ''}`)));
@@ -444,10 +448,10 @@ export function createStores({ supabase, $root, onRequestQueued }) {
     }
     mount(ui.table, h('table', { class: 'w-full text-sm' },
       h('thead', { class: 'bg-slate-100 text-slate-600 text-left' }, h('tr', {},
-        th('ストア'), th('ジャンル'), th('今日の枠', 'text-center'), th('優良', 'text-center'), th('最大上乗せ', 'text-right'),
+        th('ストア'), th('ジャンル'), th('今日の枠', 'text-center'), th('優良', 'text-center'), th('PP', 'text-center'), th('最大上乗せ', 'text-right'),
         th('判定不可', 'text-right'), th('レビュー 件 / 平均', 'text-right'), th('参加日数', 'text-right'), th('次回掲載'))),
       h('tbody', {}, rows.length > 0 ? body
-        : h('tr', {}, h('td', { colSpan: 9, class: 'px-3 py-6 text-center text-slate-400' }, '条件に合う店舗がありません')))));
+        : h('tr', {}, h('td', { colSpan: 10, class: 'px-3 py-6 text-center text-slate-400' }, '条件に合う店舗がありません')))));
   }
 
   function renderData() {

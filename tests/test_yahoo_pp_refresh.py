@@ -23,7 +23,7 @@ INPUTS = {
     "invoice": {"a-store": {"f": "Y", "reg": "T123"}, "b-store": {"f": "Y", "reg": "-"}, "n-store": {"f": "N", "reg": "-"}},
     "gold": {"a-store": 1, "b-store": 0},
     "reviews": {"a-store": [10, 5, 1, 0, 0]},
-    "points": {"a-store": {"max": 9.0, "n": 30, "n_up": 2, "unknown": 0, "detail": {}, "checked": []}},
+    "points": {"a-store": {"max": 9.0, "n": 30, "n_up": 2, "unknown": 0, "detail": {}, "checked": [], "pp": True}},
 }
 
 
@@ -40,16 +40,16 @@ def test_build_snapshot_shape_and_summary():
     assert (snap["fetched_on"], snap["period_start"], snap["period_end"]) == ("2026-10-31", DATES[0], DATES[-1])
     assert snap["dates"] == DATES and snap["source_sha"] == "abcd"
     assert snap["summary"] == {
-        "total": 3, "qualified": 2, "excluded": 1, "gold": 1, "surveyed": 1,
+        "total": 3, "qualified": 2, "excluded": 1, "gold": 1, "surveyed": 1, "pp": 1,
         "by_genre": {"スマホ、タブレット、パソコン": {"qualified": 1, "gold": 0, "excluded": 0},
                      "家電": {"qualified": 1, "gold": 1, "excluded": 1}}}
     assert [s["id"] for s in snap["stores"]] == ["a-store", "b-store", "n-store"]   # 上乗せ率 降順 → ジャンル → ID
     a = snap["stores"][0]
     assert a == {"id": "a-store", "name": "A 店", "genre": "家電", "cat": "2505", "gold": True, "inv": "Y", "reg": "T123",
-                 "max_upsell": 9.0, "unknown": 0, "n": 30, "n_up": 2, "reviews": [10, 5, 1, 0, 0],
+                 "max_upsell": 9.0, "pp": True, "unknown": 0, "n": 30, "n_up": 2, "reviews": [10, 5, 1, 0, 0],
                  "days": 2, "d9": 1, "d4": 1, "first": "2026-10-30", "last": "2026-11-01", "pat": "9-4"}
     b = snap["stores"][1]
-    assert (b["reg"], b["max_upsell"], b["unknown"], b["reviews"], b["gold"]) == ("", None, None, None, False)
+    assert (b["reg"], b["max_upsell"], b["pp"], b["unknown"], b["reviews"], b["gold"]) == ("", None, None, None, None, False)
     assert snap["stores"][2]["inv"] == "N" and snap["stores"][2]["name"] == "非適格"
     assert "全 3 店 / 適格 2" in describe(snap)
     assert json.dumps(snap)   # JSON にできる
@@ -322,3 +322,34 @@ def test_main_print_snapshot_needs_no_db(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(refresh.db, "get_client", lambda: client)
     assert refresh.main(["--upload-only"]) == 0
     assert client.rows[0]["fetched_on"] == dt.date.today().isoformat() and client.rows[0]["summary"]["total"] == 3
+
+
+# ---- PP 加入 (backfill_pp / promotion_package) ----
+
+def test_promotion_package_reads_seller_flag():
+    from tools.yahoo_pp.enrich import promotion_package
+    assert promotion_package({"props": {"pageProps": {"seller": {"isPromotionPackageApplied": True}}}}) is True
+    assert promotion_package({"props": {"pageProps": {"seller": {"isPromotionPackageApplied": False}}}}) is False
+    assert promotion_package({"props": {"pageProps": {"seller": {}}}}) is None
+    assert promotion_package({"props": {"pageProps": {"seller": {"isPromotionPackageApplied": "true"}}}}) is None
+    assert promotion_package(None) is None
+
+
+def test_backfill_pp_uses_cache_only(tmp_path):
+    from tools.yahoo_pp import backfill_pp
+    cache = tmp_path / "cache"
+    f = backfill_pp.CacheOnlyFetcher(cache)
+    search = json.dumps({"props": {"items": [{"url": "https://store.shopping.yahoo.co.jp/s1/x.html", "point": {"rate": 5}}]}})
+    page = json.dumps({"props": {"pageProps": {"seller": {"isPromotionPackageApplied": False}, "point": {"totalPointRatio": 5}}}})
+    for url, body in (("https://store.shopping.yahoo.co.jp/s1/search.html", search),
+                      ("https://store.shopping.yahoo.co.jp/s1/x.html", page)):
+        f._key("GET", url, None).write_text(json.dumps({"status": 200, "url": url,
+                                                         "text": f'<script id="__NEXT_DATA__">{body}</script>'}), encoding="utf-8")
+    out = tmp_path / "data"
+    out.mkdir()
+    (out / "points.json").write_text(json.dumps({"s1": {"max": 1.0}, "s2": {"max": 0.0}}), encoding="utf-8")
+    counts = backfill_pp.backfill(out, f)
+    assert counts == {"true": 0, "false": 1, "none": 1}
+    saved = json.loads((out / "points.json").read_text(encoding="utf-8"))
+    assert saved["s1"]["pp"] is False and saved["s2"]["pp"] is None
+    assert f.requests_made == 0 and f.misses >= 1

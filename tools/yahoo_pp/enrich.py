@@ -101,21 +101,29 @@ def search_products(f: Fetcher, sid: str) -> list[tuple[str, float]] | None:
     return items
 
 
-def product_page(f: Fetcher, url: str) -> tuple[bool, float | None]:
-    """(優良ストアか, 上乗せ率 = totalPointRatio − 標準で付く各行の率の合計)"""
+def promotion_package(nd: dict | None) -> bool | None:
+    """商品ページの seller.isPromotionPackageApplied (プロモーションパッケージ加入)。無ければ None"""
+    seller = ((nd or {}).get("props") or {}).get("pageProps", {}).get("seller") if nd else None
+    v = seller.get("isPromotionPackageApplied") if isinstance(seller, dict) else None
+    return v if isinstance(v, bool) else None
+
+
+def product_page(f: Fetcher, url: str) -> tuple[bool, float | None, bool | None]:
+    """(優良ストアか, 上乗せ率 = totalPointRatio − 標準で付く各行の率の合計, PP 加入か (不明は None))"""
     if url.startswith("/"):
         url = "https://store.shopping.yahoo.co.jp" + url
     st, _, t = f.fetch(url)
     if st != 200:
-        return False, None
+        return False, None, None
     gold = "excellentStoreGold_logo" in t
     nd = next_data(t)
+    pp = promotion_package(nd)
     pt = ((nd or {}).get("props") or {}).get("pageProps", {}).get("point") if nd else None
     if not pt or not isinstance(pt.get("totalPointRatio"), (int, float)):
-        return gold, None
+        return gold, None, pp
     base = sum(float(p.get("ratio") or 0) for c in pt.get("currentCampaignList", [])
                for p in c.get("partsCampaignList", []))
-    return gold, round(float(pt["totalPointRatio"]) - base, 2)
+    return gold, round(float(pt["totalPointRatio"]) - base, 2), pp
 
 
 def survey_points(f: Fetcher, sid: str) -> tuple[int | None, dict | None]:
@@ -125,12 +133,15 @@ def survey_points(f: Fetcher, sid: str) -> tuple[int | None, dict | None]:
     rates = sorted({r for _, r in items}, reverse=True)
     verified: dict[float, float] = {}       # 一覧の率 → 上乗せ率
     gold: int | None = None
+    pp: bool | None = None
     checked: list[list[float]] = []
     for rate in rates[:MAX_PRODUCT_PAGES]:
         url = next(u for u, r in items if r == rate)
-        g, up = product_page(f, url)
+        g, up, page_pp = product_page(f, url)
         if gold is None:
             gold = int(g)
+        if pp is None:
+            pp = page_pp
         if up is not None:
             verified[rate] = up
             checked.append([rate, up])
@@ -152,6 +163,7 @@ def survey_points(f: Fetcher, sid: str) -> tuple[int | None, dict | None]:
         "unknown": unknown,
         "detail": detail,
         "checked": checked,
+        "pp": pp,
     }
 
 
