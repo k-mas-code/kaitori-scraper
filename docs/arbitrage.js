@@ -54,6 +54,10 @@ const stores = createStores({ supabase, $root: $stores });
 // 実行一覧を読み直す必要があるか。リサーチ画面を開いたら立てる
 // (離れている間はポーリングが止まるので、その間に終わった依頼は onRunFinished では分からない)
 let runsStale = false;
+// 実行中の run (途中結果) を選んでいる間は、一定間隔で一覧と結果を読み直す
+const LIVE_REFRESH_MS = 30000;
+let runStatusById = new Map();
+let liveTimer = null;
 let currentTab = 'results';
 
 let results = [];          // 選択中の実行の全結果 (利益率の高い順)
@@ -166,13 +170,15 @@ for (const [name, $btn] of Object.entries($tabButtons)) {
 
 // ---------- 実行一覧 ----------
 // selectRunId: 選択した状態にする実行 (一覧に無ければ最新を選ぶ)
-async function loadRuns(selectRunId = null) {
+// quiet: 自動更新。「読み込み中…」を出さず、読み込み中にユーザーが選び直した run を優先する
+async function loadRuns(selectRunId = null, quiet = false) {
   runsStale = false;
-  $status.textContent = '読み込み中…';
+  if (!quiet) $status.textContent = '読み込み中…';
   const { data, error } = await supabase
     .from('arbitrage_runs')
-    .select('id,started_at,finished_at,coupon_margin,jan_count,candidate_count,result_count')
-    .eq('status', 'completed')
+    .select('id,started_at,finished_at,status,coupon_margin,jan_count,candidate_count,result_count')
+    // running = 確定判定の途中結果が順次入る / failed = 中断して途中結果だけが入っている (再開すれば completed になる)
+    .in('status', ['running', 'completed', 'failed'])
     .order('started_at', { ascending: false })
     .limit(200);
   if (error) {
@@ -185,23 +191,31 @@ async function loadRuns(selectRunId = null) {
     $status.textContent = '表示できる結果がありません（まだ実行していないか、このアカウントに閲覧権限がありません）。';
     return;
   }
+  runStatusById = new Map(data.map((run) => [run.id, run.status]));
+  const current = Number($runSelect.value) || null;   // 読み込み中に選び直されていればそちらを優先
   $runSelect.replaceChildren(...data.map((run) => {
     const opt = document.createElement('option');
     opt.value = run.id;
-    opt.textContent = `${formatDateTime(run.started_at)}（${run.result_count ?? 0}件）`;
+    const live = run.status === 'running' ? '実行中・途中 ' : run.status === 'failed' ? '中断・途中 ' : '';
+    opt.textContent = `${formatDateTime(run.started_at)}（${live}${run.result_count ?? 0}件）`;
     return opt;
   }));
-  const selected = data.find((run) => run.id === selectRunId) ?? data[0];
+  const wanted = quiet && current !== selectRunId ? current : selectRunId;
+  const selected = data.find((run) => run.id === wanted) ?? data[0];
   $runSelect.value = String(selected.id);
-  loadResults(selected.id);
+  loadResults(selected.id, quiet);
 }
 
-$runSelect.addEventListener('change', () => loadResults(Number($runSelect.value)));
+$runSelect.addEventListener('change', () => {
+  if (liveTimer) clearTimeout(liveTimer);   // 前の run の自動更新は止める (必要なら loadResults が張り直す)
+  liveTimer = null;
+  loadResults(Number($runSelect.value));
+});
 
 // ---------- 結果 ----------
-async function loadResults(runId) {
+async function loadResults(runId, quiet = false) {
   const token = ++loadToken;
-  $status.textContent = '読み込み中…';
+  if (!quiet) $status.textContent = '読み込み中…';
   const rows = [];
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await supabase
@@ -224,7 +238,29 @@ async function loadResults(runId) {
   fillFilter($category, 'すべてのカテゴリ', rows.map((r) => [r.category || '', r.category || '（不明）']));
   fillFilter($store, 'すべての店舗', rows.map((r) => [r.store_id, r.store_name || r.store_id]));
   renderTable();
+  scheduleLiveRefresh(runId);
 }
+
+// 実行中の run を見ている間だけ、LIVE_REFRESH_MS ごとに一覧 (件数・完了) と結果を読み直す。
+// タブが隠れている間は読まず、再表示されたときにすぐ読み直す
+function scheduleLiveRefresh(runId) {
+  if (liveTimer) clearTimeout(liveTimer);
+  liveTimer = null;
+  if (runStatusById.get(runId) !== 'running') return;
+  liveTimer = setTimeout(() => {
+    liveTimer = null;
+    if (Number($runSelect.value) !== runId) return;      // 別の run に切り替わっていれば、その run の分が張られている
+    if (document.hidden) { liveTimer = 'paused'; return; }
+    loadRuns(runId, true);
+  }, LIVE_REFRESH_MS);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || liveTimer !== 'paused') return;
+  liveTimer = null;
+  const runId = Number($runSelect.value);
+  if (runStatusById.get(runId) === 'running' && currentTab === 'results') loadRuns(runId, true);
+});
 
 function fillFilter($select, allLabel, pairs) {
   const counts = new Map();
@@ -234,6 +270,7 @@ function fillFilter($select, allLabel, pairs) {
     counts.set(value, entry);
   }
   const sorted = [...counts.entries()].sort((a, b) => b[1].count - a[1].count);
+  const previous = $select.value;   // 自動更新で option を作り直しても、選んでいた値が残っていれば保つ
   const all = document.createElement('option');
   all.value = '__all__';
   all.textContent = allLabel;
@@ -243,6 +280,7 @@ function fillFilter($select, allLabel, pairs) {
     opt.textContent = `${label}（${count}）`;
     return opt;
   }));
+  if (previous && counts.has(previous)) $select.value = previous;
 }
 
 for (const $el of [$minRate, $category, $store]) {
@@ -256,7 +294,9 @@ function renderTable() {
     Number(r.profit_rate) >= minRate &&
     ($category.value === '__all__' || (r.category || '') === $category.value) &&
     ($store.value === '__all__' || r.store_id === $store.value));
-  $status.textContent = `${rows.length} 件を表示（全 ${results.length} 件、利益率の高い順）`;
+  const st = runStatusById.get(Number($runSelect.value));
+  const live = st === 'running' ? '。実行中の途中結果 (30 秒ごとに更新)' : st === 'failed' ? '。中断した run の途中結果' : '';
+  $status.textContent = `${rows.length} 件を表示（全 ${results.length} 件、利益率の高い順${live}）`;
   $tbody.innerHTML = rows.map(rowHtml).join('') ||
     '<tr><td colspan="6" class="px-3 py-6 text-center text-slate-400">条件に合う商品がありません</td></tr>';
 }
