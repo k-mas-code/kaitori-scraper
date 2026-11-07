@@ -16,7 +16,11 @@ from .config import DATE_RE
 from .scope import DEFAULT_REACH_SLACK, MAX_REACH_SLACK, PAGE_SCOPES, SCOPE_REACHABLE
 
 PARAM_KEYS = {"purchase_date", "min_buyback", "max_buyback", "min_profit", "page_scope", "reach_slack",
-              "deadline", "categories"}
+              "deadline", "categories", "select", "limit"}
+# 対象 JAN の選び方 (run.SELECT_MODES と同じ)。rising = 買取価格が 7 日前より上がった JAN を値上がり順に (クイックサーチ)
+SELECT_ALL, SELECT_RISING = "all", "rising"
+SELECT_MODES = (SELECT_ALL, SELECT_RISING)
+LIMIT_RANGE = (1, 20000)
 # 依頼の種類 (params.kind)。省略時は従来どおりのリサーチ
 KIND_RESEARCH, KIND_STORE_LIST = "research", "store_list"
 KINDS = (KIND_RESEARCH, KIND_STORE_LIST)
@@ -46,6 +50,8 @@ class ResearchParams:
     reach_slack: float = DEFAULT_REACH_SLACK
     deadline: datetime | None = None    # 終了時刻の上限 (タイムゾーン付き)
     categories: tuple[str, ...] = ()    # 大分類 (categories.GROUPS) で対象を絞る。空 = すべて
+    select: str = SELECT_ALL            # 対象 JAN の選び方 (all / rising)
+    limit: int | None = None            # 対象 JAN の件数の上限 (None = なし)。rising は値上がり順の上位、all は均等に
 
 
 @dataclass(frozen=True)
@@ -158,8 +164,14 @@ def parse_params(raw) -> ResearchParams | StoreListParams:
             or (isinstance(reach_slack, float) and not math.isfinite(reach_slack)) \
             or not 0 <= reach_slack <= MAX_REACH_SLACK:
         raise ParamsError(f"reach_slack: 0 以上 {MAX_REACH_SLACK} 以下の数値で指定する: {reach_slack!r}")
+    select = raw.get("select", SELECT_ALL)
+    if select not in SELECT_MODES:
+        raise ParamsError(f"select: {' / '.join(SELECT_MODES)} のどちらかで指定する: {select!r}")
+    limit = _optional_amount(raw, "limit")
+    if limit is not None and not LIMIT_RANGE[0] <= limit <= LIMIT_RANGE[1]:
+        raise ParamsError(f"limit: {LIMIT_RANGE[0]} 以上 {LIMIT_RANGE[1]} 以下で指定する: {limit!r}")
     return ResearchParams(purchase_date, min_buyback, max_buyback, min_profit, page_scope,
-                          float(reach_slack), _deadline(raw), _categories(raw))
+                          float(reach_slack), _deadline(raw), _categories(raw), select, limit)
 
 
 def build_run_args(params: ResearchParams, request_id: int) -> list[str]:
@@ -177,6 +189,10 @@ def build_run_args(params: ResearchParams, request_id: int) -> list[str]:
         args += ["--deadline", params.deadline.isoformat()]
     for group in params.categories:
         args += ["--category", group]
+    if params.select != SELECT_ALL:
+        args += ["--select", params.select]
+    if params.limit is not None:
+        args += ["--limit", str(int(params.limit))]
     return args
 
 
@@ -257,6 +273,9 @@ def estimate(params: ResearchParams, histogram, rates) -> Estimate:
     """所要時間の予測。histogram は arbitrage_worker_state.buyback_histogram、rates は同 rates (欠けは既定値)"""
     r = clean_rates(rates)
     jan_count = count_targets(histogram, params.min_buyback, params.max_buyback, params.categories)
+    if params.limit is not None:
+        # 値上がりした JAN の数は実行時にしか分からないので、上限いっぱいまで対象になる前提で見積もる
+        jan_count = min(jan_count, params.limit)
     fraction = r["reachable_fraction"] if params.page_scope == SCOPE_REACHABLE else 1.0
     page_checks = jan_count * r["candidates_per_jan"] * fraction
     return Estimate(jan_count, jan_count / r["jan_per_min"], page_checks, page_checks * r["seconds_per_check"])

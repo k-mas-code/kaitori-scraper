@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 from dataclasses import asdict, replace
 
-from .buyback import Buyback, load_buyback_prices, load_categories, read_credentials
+from .buyback import PREV_DAYS, Buyback, load_buyback_prices, load_categories, read_credentials
 from .categories import GROUP_OTHER, GROUPS
 from . import db
 from .config import (ROOT, CampaignConfig, ConfigError, Settings, active_config, load_settings_file,
@@ -57,7 +57,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--category", action="append", choices=GROUPS, default=None, metavar="NAME",
                    help=f"この大分類の JAN だけを対象にする (繰り返し可)。{' / '.join(GROUPS)}")
     p.add_argument("--limit", type=int, default=None,
-                   help="対象 JAN を N 件に絞る (試行用)。買取価格の高い順に並べ、全体から均等な間隔で N 件を選ぶ")
+                   help="対象 JAN を N 件に絞る。--select all なら買取価格の高い順に並べて全体から均等な間隔で、"
+                        "rising なら値上がり幅の大きい順に上から N 件")
+    p.add_argument("--select", choices=SELECT_MODES, default=SELECT_ALL,
+                   help=f"対象 JAN の選び方。all = 買取価格の範囲の全 JAN、rising = 買取価格が {PREV_DAYS} 日前より"
+                        "上がった JAN だけ (クイックサーチ。--limit と組み合わせる)")
     p.add_argument("--date", type=date.fromisoformat, default=None,
                    help="実行日 YYYY-MM-DD (この日のボーナスストアPlus枠・キャンペーン・クーポンで計算する)。"
                         "既定は設定の購入予定日 (purchase_date)")
@@ -98,18 +102,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def select_targets(buyback, min_price: int | None, max_price: int | None, limit: int | None,
-                   categories=None) -> list[Buyback]:
-    """対象 JAN を買取価格の高い順に並べる。limit があれば、価格帯が偏らないよう均等な間隔で選ぶ。
+SELECT_ALL, SELECT_RISING = "all", "rising"
+SELECT_MODES = (SELECT_ALL, SELECT_RISING)
 
+
+def select_targets(buyback, min_price: int | None, max_price: int | None, limit: int | None,
+                   categories=None, select: str = SELECT_ALL) -> list[Buyback]:
+    """対象 JAN を選ぶ。
+
+    all: 買取価格の高い順に並べる。limit があれば、価格帯が偏らないよう均等な間隔で選ぶ。
+    rising: 買取価格が PREV_DAYS 日前より上がった JAN (prev_price がある分だけ) を、値上がり幅の大きい順に並べ、
+            limit があれば上から limit 件 (クイックサーチ)。
     categories (大分類名の列) があればその分類だけ。大分類が無い JAN (古い run の buyback.json) は対象から外す
     """
     wanted = set(categories or ())
-    targets = sorted(
-        (b for b in buyback
-         if (min_price is None or b.price >= min_price) and (max_price is None or b.price <= max_price)
-         and (not wanted or b.category in wanted)),
-        key=lambda b: (-b.price, b.jan_code))
+    in_range = [b for b in buyback
+                if (min_price is None or b.price >= min_price) and (max_price is None or b.price <= max_price)
+                and (not wanted or b.category in wanted)]
+    if select == SELECT_RISING:
+        rising = [b for b in in_range if b.rise is not None and b.rise > 0]
+        targets = sorted(rising, key=lambda b: (-b.rise, -b.price, b.jan_code))
+        return targets[:limit] if limit else targets
+    targets = sorted(in_range, key=lambda b: (-b.price, b.jan_code))
     if limit and len(targets) > limit:
         targets = [targets[i * len(targets) // limit] for i in range(limit)]
     return targets
@@ -327,9 +341,12 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
         logger.warning("購入予定日 (%s) が今日ではないので、対象が「商品ページに行が出ている店」のキャンペーンは"
                        "今日のページで判定される (その日だけの企画は付かない扱いになる)", run_date)
     state = RunState(run_name)
-    # 再開時に一致を求める条件 (--limit は対象 JAN を絞るだけなので含めない)
+    # 再開時に一致を求める条件 (--limit は対象 JAN を絞るだけなので含めない)。
+    # --select rising は買取価格の読み方 (7 日前の価格) が違うので含める (all のときはキーを置かず、古い run と合う)
     meta = {"run_date": run_date.isoformat(), "coupon_margin": args.coupon_margin,
             "config": cfg.raw, "store_list": stores.source_file}
+    if args.select != SELECT_ALL:
+        meta["select"] = args.select
     previous = state.load_meta()
     if (previous is not None and args.request_id is not None and args.run_name is None
             and any(previous.get(k) != v for k, v in meta.items())):
@@ -362,6 +379,7 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
                   + "".join(f" {flag} {value}" for flag, value in (
                       ("--min-buyback", args.min_buyback), ("--max-buyback", args.max_buyback),
                       ("--limit", args.limit)) if value is not None)
+                  + (f" --select {args.select}" if args.select != SELECT_ALL else "")
                   + "".join(f" --category {c}" for c in args.category or ())
                   + (f" --min-profit {args.min_profit}" if args.min_profit != 1 else "")
                   + (f" --page-scope {args.page_scope}" if args.page_scope != SCOPE_REACHABLE else "")
@@ -378,11 +396,15 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
     saved = state.load_buyback()
     if saved is None:
         # 買取価格は「いま」の相場を使う (購入予定日が先の日付でも、今日までの直近分を読む)
-        buyback = load_buyback_prices(min(run_date, date.today()))
+        buyback = load_buyback_prices(min(run_date, date.today()), with_prev=args.select == SELECT_RISING)
         state.save_buyback([asdict(b) for b in buyback.values()])
     else:
         buyback = {row["jan_code"]: Buyback(**row) for row in saved}
         logger.info("buyback prices: %d JANs (run %s の開始時点の保存分)", len(buyback), run_name)
+    if args.select == SELECT_RISING and all(b.prev_price is None for b in buyback.values()):
+        logger.error("run %s の買取価格に %d 日前の価格が無いので --select rising では続けられない "
+                     "(--select rising なしで始めた run。--run-name で別名にする)", run_name, PREV_DAYS)
+        return 2
     if args.category and any(b.category is None for b in buyback.values()):
         # 大分類が付く前に始まった run の保存分。分類は価格と違って「開始時点」に固定する必要が無いので、いま読んで補う
         logger.info("run %s の買取価格に大分類が無いので products から読み直す", run_name)
@@ -390,7 +412,8 @@ def _main(argv: list[str] | None, clock: Clock, stack: contextlib.ExitStack) -> 
         buyback = {jan: replace(b, category=groups.get(jan, GROUP_OTHER)) if b.category is None else b
                    for jan, b in buyback.items()}
         state.save_buyback([asdict(b) for b in buyback.values()])
-    targets = select_targets(buyback.values(), args.min_buyback, args.max_buyback, args.limit, args.category)
+    targets = select_targets(buyback.values(), args.min_buyback, args.max_buyback, args.limit, args.category,
+                             args.select)
 
     done = {r["jan_code"]: r for r in state.load_api_records()}
     target_jans = {b.jan_code for b in targets}

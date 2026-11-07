@@ -221,3 +221,36 @@ def test_parse_params_kind_store_list():
 def test_parse_params_rejects_bad_kind(raw, match):
     with pytest.raises(ParamsError, match=match):
         parse_params(raw)
+
+
+def test_parse_params_select_and_limit():
+    p = parse_params({"purchase_date": "2026-10-11", "select": "rising", "limit": 300})
+    assert (p.select, p.limit) == ("rising", 300)
+    d = parse_params({"purchase_date": "2026-10-11"})
+    assert (d.select, d.limit) == ("all", None)
+    assert parse_params({"purchase_date": "2026-10-11", "select": "all", "limit": None}).limit is None
+    argv = build_run_args(p, 3)
+    assert argv[-4:] == ["--select", "rising", "--limit", "300"]
+    args = parse_args(argv)
+    assert (args.select, args.limit) == ("rising", 300)
+    assert "--select" not in build_run_args(d, 3) and "--limit" not in build_run_args(d, 3)
+
+
+@pytest.mark.parametrize("raw, match", [
+    ({"purchase_date": "2026-10-11", "select": "quick"}, "select"),
+    ({"purchase_date": "2026-10-11", "limit": 0}, "limit"),
+    ({"purchase_date": "2026-10-11", "limit": 20001}, "limit"),
+    ({"purchase_date": "2026-10-11", "limit": "300"}, "limit"),
+])
+def test_parse_params_rejects_bad_select_and_limit(raw, match):
+    with pytest.raises(ParamsError, match=match):
+        parse_params(raw)
+
+
+def test_estimate_caps_jan_count_at_limit():
+    histogram = {"counts": {"0": 1000, "1000": 1000}}
+    rates = {"jan_per_min": 30, "candidates_per_jan": 1, "reachable_fraction": 0.5, "seconds_per_check": 4}
+    full = estimate(parse_params({"purchase_date": "2026-10-11"}), histogram, rates)
+    capped = estimate(parse_params({"purchase_date": "2026-10-11", "select": "rising", "limit": 300}), histogram, rates)
+    assert full.jan_count == 2000 and capped.jan_count == 300
+    assert capped.api_minutes == 10 and capped.page_checks == 150 and capped.page_seconds == 600

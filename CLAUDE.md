@@ -78,6 +78,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 ```bash
 .venv/bin/python -m arbitrage.run --coupon-margin 0.2              # 全件 (約1.6万 JAN。API だけで 9〜10 時間)。設定は Supabase から読む
 .venv/bin/python -m arbitrage.run --limit 100 --no-db              # 試行: 全体から均等に 100 JAN、DB 保存なし
+.venv/bin/python -m arbitrage.run --select rising --limit 300      # クイックサーチ: 買取価格が 7 日前より上がった JAN を値上がり順に 300 件 (約 30 分)
 .venv/bin/python -m arbitrage.run --min-buyback 5000 --max-buyback 60000   # 買取価格の範囲で対象を絞る
 .venv/bin/python -m arbitrage.run --category 家電 --category ゲーム      # 商品分類 (大分類) で対象を絞る (繰り返し可。名前は arbitrage/categories.py の GROUPS)
 .venv/bin/python -m arbitrage.run --stage api                      # 商品検索APIでの絞り込みまで
@@ -96,7 +97,7 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 - 判定式: `買取価格 > (販売価格 − クーポン) − 付与ポイント`。クーポンは 1 注文 1 枚 (併用なし): ページの公開クーポンと手持ちクーポンのうち利益が最大になる 1 枚、または使わない。ポイントは「1 つだけ買う」前提で、枠ごとに `min(floor(クーポン後の税抜価格 × 率), 上限)` を合計。税抜 = 税込 − floor(税込 × 10/110)
 - 利益率 = (買取価格 − 実質価格) / 実質価格。送料・手数料・減額リスクは考えない
 - 流れ (`arbitrage/run.py`)
-  1. 買取価格 (`buyback.py`): `price_history` の直近7日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値。`products.category` を大分類 (`categories.py`) に寄せて `Buyback.category` に持つ (古い run の `buyback.json` には無く None。`--category` で絞るとその JAN は対象外・警告 1 回)
+  1. 買取価格 (`buyback.py`): `price_history` の直近7日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値。`--select rising` (クイックサーチ) のときは 7 日前以前の最新価格 (`prev_price`。さらに 7 日さかのぼって読む) も同じ方法で持ち、値上がり幅 `rise = price − prev_price` が正の JAN だけを値上がり順に並べて `--limit` 件 (均等ではなく上から)。buyback.json に prev_price が無い run (select なしで始めたもの) では rising で続けられない (終了コード 2)。`select` は再開条件 (meta) に含める (all のときはキーなし)。`products.category` を大分類 (`categories.py`) に寄せて `Buyback.category` に持つ (古い run の `buyback.json` には無く None。`--category` で絞るとその JAN は対象外・警告 1 回)
   2. 商品検索API v3 (`yahoo_api.py`): `jan_code` で新品・在庫ありを価格の安い順に取得。**実測の制限は時計の 1 分ごとに 30 回** (公式の記載は 1 秒 1 回) → 2.15 秒間隔。429 は次の分の変わり目まで待って再試行
   3. 絞り込み (`prefilter.py`): 店舗リストの店だけ残し、甘い実質価格 `販売価格 − max(販売価格 × クーポン余地, 使える手持ちクーポンの最大値引き額) − クーポン前の価格で付きうるポイント` が買取価格を下回るものを候補にする
   4. 確定判定 (`scope.py` / `yahoo_page.py` / `finalize.py`): **届きそうな候補だけを、届きやすい順に**商品ページで確認し、実際の上乗せ率とクーポンで再計算。黒字だけを結果にする
@@ -133,7 +134,8 @@ Yahoo!ショッピングで買って買取店に売ると利益が出る商品�
 - スキーマ: `db/arbitrage_research.sql` (`db/arbitrage.sql` の後に実行。再実行可)
   - `arbitrage_research_requests`: 依頼 1 行 = 1 回の実行。`status` は queued → running → completed / failed / cancelled。**待ち・実行中の依頼は同時に 1 件だけ** (部分ユニークインデックス)。オーナーが書けるのは INSERT の `params` と UPDATE の `cancel_requested` だけ (列単位 GRANT)
   - `arbitrage_worker_state` (1 行): `heartbeat_at` (10 秒ごと)、`buyback_histogram` (買取価格 1,000 円刻みの JAN 数 `counts` と大分類ごとの `by_group`。30 分ごと)、`rates` (実測の速度)
-- 依頼の `params` (ページと `research.parse_params` の両方で検証。不明なキー・範囲外は拒否): `purchase_date` (必須。`--date` に渡す)、`min_buyback` / `max_buyback`、`min_profit` (-5000〜100000)、`page_scope`、`reach_slack` (0〜0.2)、`deadline` (タイムゾーン付き ISO 日時)、`categories` (大分類名の配列。null / 空 = すべて。要素ごとに `--category` に渡す)
+- 依頼の `params` (ページと `research.parse_params` の両方で検証。不明なキー・範囲外は拒否): `purchase_date` (必須。`--date` に渡す)、`min_buyback` / `max_buyback`、`min_profit` (-5000〜100000)、`page_scope`、`reach_slack` (0〜0.2)、`deadline` (タイムゾーン付き ISO 日時)、`categories` (大分類名の配列。null / 空 = すべて。要素ごとに `--category` に渡す)、`select` (`all` / `rising`。`--select`)、`limit` (1〜20000。`--limit`)
+- **クイックサーチ** (リサーチタブの「クイックサーチ (約 30 分)」ボタン、または選び方「クイック」): `select: rising` + `limit` = 30 分に収まる件数 (`calc.quickLimit`: 1 JAN あたり `60 / jan_per_min + candidates_per_jan × reachable_fraction × seconds_per_check` 秒で割る。既定の rates で約 500、2026-11 の実測で約 300)。予測の対象 JAN 数は `min(範囲の件数, limit)` (値上がりした JAN の実数は実行時まで分からない)。JAN 200 件未満なので rates は更新しない
 - 商品分類は大分類 (`arbitrage/categories.py` の対応表 `category_group(source, category)`。GROUPS の名前と順序は `docs/arbitrage.js` と同じ) で絞る。`products.category` は最後に書いたサイトの値なので、同じ JAN でもサイトによって分類が変わりうる。対応表に無い値 (rudeya の新カテゴリなど) は「その他」。`--category` は `--min-buyback` と同じく対象を絞るだけで再開条件 (meta) には含めない
 - 待ち受けの動き: いちばん古い queued を 1 件取り、`[python, -m, arbitrage.run, *build_run_args()]` を子プロセスで起動 (シェルを通さない。引数は検証済みの値から作り直す)。出力は `data/arbitrage/requests/{依頼ID}.log`
   - 終了コード 0 → completed / 3 → cancelled (中止の依頼) / それ以外 → failed (`message` はログ末尾の ERROR 行。「再開:」の行は飛ばす)

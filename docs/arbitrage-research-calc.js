@@ -14,12 +14,17 @@ export const DEFAULT_RATES = Object.freeze({
 });
 export const DEFAULT_PARAMS = Object.freeze({
   min_buyback: null, max_buyback: null, min_profit: 1, page_scope: 'reachable', reach_slack: 0.03, deadline: null, categories: null,
+  select: 'all', limit: null,
 });
+// 対象 JAN の選び方 (arbitrage/research.py の SELECT_MODES と同じ)。rising = 買取価格が 7 日前より上がった JAN を値上がり順に
+export const SELECT_MODES = Object.freeze(['all', 'rising']);
+export const LIMIT_RANGE = Object.freeze([1, 20000]);
+export const QUICK_MINUTES = 30;   // クイックサーチの目標時間 (分)
 // 商品の大分類 (名前と順序は arbitrage/categories.py と同じ)
 export const CATEGORY_GROUPS = Object.freeze([
   '家電', 'スマホ・タブレット', 'パソコン・周辺機器', 'カメラ', 'ゲーム', 'オーディオ', 'ウェアラブル', 'トレカ・ホビー', 'お酒', '化粧品', 'その他',
 ]);
-const PARAM_KEYS = ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'page_scope', 'reach_slack', 'deadline', 'categories'];
+const PARAM_KEYS = ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'page_scope', 'reach_slack', 'deadline', 'categories', 'select', 'limit'];
 const PAGE_SCOPES = ['reachable', 'all'];
 export const MIN_PROFIT_RANGE = [-5000, 100000];
 const MAX_REACH_SLACK = 0.2;
@@ -119,13 +124,18 @@ export function validateParams(params) {
   }
   const categoriesMessage = categoriesError(params.categories);
   if (categoriesMessage) fail('categories', categoriesMessage);
+  if (!SELECT_MODES.includes(params.select ?? 'all')) fail('select', '対象の選び方を選んでください');
+  const limit = params.limit ?? null;
+  if (limit !== null && !(isInt(limit) && limit >= LIMIT_RANGE[0] && limit <= LIMIT_RANGE[1])) {
+    fail('limit', `${num(LIMIT_RANGE[0])} 以上 ${num(LIMIT_RANGE[1])} 以下の整数で入力するか、空欄 (上限なし) にしてください`);
+  }
   return errors;
 }
 
 /**
  * 入力欄の文字列 → { params, errors }。errors は [{ path, message }] (path は入力欄の data-field)。
  * form: { purchase_date, min_buyback, max_buyback, min_profit, page_scope, reach_slack (%), deadline_time (HH:MM),
- *         categories (大分類名の配列。空 = すべて) }
+ *         categories (大分類名の配列。空 = すべて), select ('all' / 'rising'), limit (件数。空 = 上限なし) }
  */
 export function buildParams(form, now = new Date()) {
   const errors = [];
@@ -146,10 +156,14 @@ export function buildParams(form, now = new Date()) {
   const deadline = time === '' ? null : nextOccurrence(time, now);
   if (time !== '' && deadline === null) fail('deadline', '時刻を HH:MM の形で入力するか、空欄 (上限なし) にしてください');
 
+  const select = str(form.select) === '' ? 'all' : str(form.select);
+  const limitText = str(form.limit).trim();
+  const limit = limitText === '' ? null : parseSignedInt(limitText);
+  if (limitText !== '' && limit === null) fail('limit', `${num(LIMIT_RANGE[0])} 以上 ${num(LIMIT_RANGE[1])} 以下の整数で入力するか、空欄 (上限なし) にしてください`);
   const params = {
     purchase_date: str(form.purchase_date), min_buyback: minBuyback, max_buyback: maxBuyback,
     min_profit: minProfit, page_scope: pageScope, reach_slack: reachSlack, deadline,
-    categories: normalizeCategories(form.categories),
+    categories: normalizeCategories(form.categories), select, limit,
   };
   // 1 つの入力欄につき最初の 1 件だけ残す
   for (const e of validateParams(params)) {
@@ -172,6 +186,8 @@ export function paramsToForm(params, purchaseDate) {
     reach_slack: rateToPercent(slack),
     deadline_time: '',
     categories: normalizeCategories(p.categories) ?? [],
+    select: SELECT_MODES.includes(p.select) ? p.select : DEFAULT_PARAMS.select,
+    limit: isInt(p.limit) && p.limit >= LIMIT_RANGE[0] && p.limit <= LIMIT_RANGE[1] ? String(p.limit) : '',
   };
 }
 
@@ -183,6 +199,9 @@ export function summarizeParams(params) {
   const range = min === null && max === null ? '買取 指定なし'
     : `買取 ${min === null ? '' : num(min)}〜${max === null ? '' : num(max)}円`;
   const parts = [`購入 ${str(p.purchase_date) || '?'}`, range, describeCategories(p.categories)];
+  const limit = isInt(p.limit) ? `${num(p.limit)} 件` : '';
+  if (p.select === 'rising') parts.push(`クイック: 値上がり順${limit ? ` ${limit}` : ''}`);
+  else if (limit) parts.push(`均等に ${limit}`);
   if (isInt(p.min_profit)) parts.push(`利益 ${num(p.min_profit)}円以上`);
   parts.push(p.page_scope === 'all' ? '全候補'
     : `届きそうな候補${typeof p.reach_slack === 'number' ? ` (余地 ${rateToPercent(p.reach_slack)}%)` : ''}`);
@@ -260,15 +279,29 @@ export function countJansByGroup(histogram, minBuyback = null, maxBuyback = null
  * 所要時間の予測。histogram が無ければ null。
  * categoriesApplied: 分類の指定を件数に反映できたか (指定なし、または by_group が無いときは false)
  */
-export function estimateDuration({ histogram, rates, minBuyback = null, maxBuyback = null, pageScope = 'reachable', categories = null }) {
-  const jans = countJans(histogram, minBuyback, maxBuyback, categories);
-  if (jans === null) return null;
+export function estimateDuration({ histogram, rates, minBuyback = null, maxBuyback = null, pageScope = 'reachable', categories = null, limit = null }) {
+  const counted = countJans(histogram, minBuyback, maxBuyback, categories);
+  if (counted === null) return null;
+  // 値上がりした JAN の数は実行時にしか分からないので、上限いっぱいまで対象になる前提 (arbitrage/research.py と同じ)
+  const jans = isInt(limit) && limit > 0 ? Math.min(counted, limit) : counted;
   const r = effectiveRates(rates);
   const apiSeconds = (jans / r.jan_per_min) * 60;
   const checks = jans * r.candidates_per_jan * (pageScope === 'all' ? 1 : r.reachable_fraction);
   const checkSeconds = checks * r.seconds_per_check;
   const categoriesApplied = normalizeCategories(categories) !== null && hasGroupCounts(histogram);
   return { jans, apiSeconds, checks, checkSeconds, totalSeconds: apiSeconds + checkSeconds, categoriesApplied };
+}
+
+/** 1 JAN あたりの所要秒数 (API 段階 + 確定判定) */
+export function secondsPerJan(rates, pageScope = 'reachable') {
+  const r = effectiveRates(rates);
+  return 60 / r.jan_per_min + r.candidates_per_jan * (pageScope === 'all' ? 1 : r.reachable_fraction) * r.seconds_per_check;
+}
+
+/** minutes 分に収まる対象 JAN 数 (クイックサーチの上限件数。LIMIT_RANGE に収める) */
+export function quickLimit(rates, pageScope = 'reachable', minutes = QUICK_MINUTES) {
+  const n = Math.floor((minutes * 60) / secondsPerJan(rates, pageScope));
+  return Math.min(LIMIT_RANGE[1], Math.max(LIMIT_RANGE[0], n));
 }
 
 /**
