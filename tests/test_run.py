@@ -181,3 +181,25 @@ def test_apply_pp_coupons_expands_to_pp_stores(caplog):
     assert out.coupons[0].target == "stores" and out.coupons[0].store_ids == ("p1",)
     assert out.raw == cfg.raw   # 再開条件は変わらない
     assert apply_pp_coupons(CFG, stores) is CFG
+
+
+def test_select_targets_rising_orders_by_rise_and_takes_top_limit():
+    items = [
+        Buyback("1", 10000, "rudeya", "2026-11-07", "家電", prev_price=9000),    # +1000
+        Buyback("2", 50000, "rudeya", "2026-11-07", "家電", prev_price=47000),   # +3000
+        Buyback("3", 20000, "rudeya", "2026-11-07", "家電", prev_price=20000),   # 変わらず
+        Buyback("4", 30000, "rudeya", "2026-11-07", "家電", prev_price=31000),   # 値下がり
+        Buyback("5", 8000, "rudeya", "2026-11-07", "家電", prev_price=None),     # 比較できない
+        Buyback("6", 12000, "rudeya", "2026-11-07", "ゲーム", prev_price=11000),  # +1000 (同じ幅なら価格の高い方が先)
+    ]
+    assert [b.jan_code for b in select_targets(items, None, None, None, select="rising")] == ["2", "6", "1"]
+    assert [b.jan_code for b in select_targets(items, None, None, 2, select="rising")] == ["2", "6"]
+    assert [b.jan_code for b in select_targets(items, None, 20000, None, ["家電"], "rising")] == ["1"]
+    # all は prev_price を無視する
+    assert [b.jan_code for b in select_targets(items, None, None, None)] == ["2", "4", "3", "6", "1", "5"]
+
+
+def test_select_rising_is_a_resume_condition_and_in_resume_command():
+    args = parse_args(["--select", "rising", "--limit", "300"])
+    assert (args.select, args.limit) == ("rising", 300)
+    assert parse_args([]).select == "all"

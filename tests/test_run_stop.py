@@ -61,7 +61,7 @@ def world(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(run_module, "load_stores", lambda run_date: stores)
     monkeypatch.setattr(run_module, "ItemSearchClient", lambda client_id: client)
     monkeypatch.setattr(run_module, "load_buyback_prices",
-                        lambda today: {j: Buyback(j, 9000, "rudeya", "2026-10-04", "家電" if i % 2 == 0 else "ゲーム")
+                        lambda today, with_prev=False: {j: Buyback(j, 9000, "rudeya", "2026-10-04", "家電" if i % 2 == 0 else "ゲーム")
                                        for i, j in enumerate(JANS)})
     monkeypatch.setattr(run_module, "read_credentials", lambda: ("http://x", "k"))
     monkeypatch.setattr(run_module, "load_categories",

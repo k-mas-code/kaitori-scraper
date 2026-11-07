@@ -6,7 +6,7 @@ import { isValidDate } from './arbitrage-settings.js';
 import {
   ACTIVE_STATUSES, CATEGORY_GROUPS, MIN_PROFIT_RANGE, STAGE_LABELS, STATUS_LABELS,
   activeOnDate, buildParams, canShowResults, checkDeadline, countJansByGroup, describeCoupon, describePoint,
-  describeStoreUpsell, estimateDuration, formatDateTime, formatDuration, hasGroupCounts, hasNewlyFinished,
+  describeStoreUpsell, estimateDuration, formatDateTime, formatDuration, hasGroupCounts, hasNewlyFinished, QUICK_MINUTES, quickLimit,
   isActiveStatus, isInt, isMissingTableError, isObject, isWorkerAlive, num, paramsToForm, progressPercent,
   purchaseDateToApply, str, summarizeParams, todayIso,
 } from './arbitrage-research-calc.js';
@@ -108,9 +108,9 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       h('span', { class: 'hidden text-xs text-red-600 mt-1', dataset: { error: name }, id: `research-err-${name}` }));
   }
 
-  function radio(value, label) {
+  function radio(value, label, field = 'page_scope') {
     return h('label', { class: 'flex items-center gap-2 text-sm' },
-      h('input', { type: 'radio', name: 'research-page-scope', value, class: 'h-4 w-4', dataset: { field: 'page_scope' } }),
+      h('input', { type: 'radio', name: `research-${field}`, value, class: 'h-4 w-4', dataset: { field } }),
       h('span', { class: 'text-slate-700' }, label));
   }
 
@@ -154,16 +154,26 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
           h('span', { class: 'hidden text-xs text-red-600 mt-1', dataset: { error: 'page_scope' } })),
         field('届きそうと見なす余地 (%)', 'reach_slack', { type: 'number', step: '0.5', min: '0', max: '20' },
           '広げるほど確定判定の件数が増えます (予測時間には反映されません)'),
-        field('終了時刻の上限 (任意)', 'deadline', { type: 'time' }, '次に来るその時刻で打ち切ります。空欄 = 最後まで')));
+        field('終了時刻の上限 (任意)', 'deadline', { type: 'time' }, '次に来るその時刻で打ち切ります。空欄 = 最後まで')),
+      h('div', { class: 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4 mt-4' },
+        h('fieldset', { class: 'sm:col-span-2' },
+          h('legend', { class: 'text-sm text-slate-500' }, '対象 JAN の選び方'),
+          h('div', { class: 'mt-2 space-y-2' },
+            radio('all', '買取金額の範囲の全 JAN', 'select'),
+            radio('rising', 'クイック: 買取価格が 7 日前より上がった JAN を、値上がり幅の大きい順に', 'select')),
+          h('span', { class: 'hidden text-xs text-red-600 mt-1', dataset: { error: 'select' } })),
+        field('対象の件数の上限', 'limit', { inputmode: 'numeric', placeholder: '上限なし' },
+          `クイックは上から N 件。空欄なら約 ${QUICK_MINUTES} 分に収まる件数を自動で入れます`)));
 
     const $run = h('button', { type: 'button', class: BTN_PRIMARY, dataset: { action: 'run' } }, 'リサーチ実行');
+    const $quick = h('button', { type: 'button', class: BTN_OUTLINE, dataset: { action: 'quick' } }, `クイックサーチ (約 ${QUICK_MINUTES} 分)`);
     const $runMessage = h('span', { class: 'text-sm text-slate-500', role: 'status' });
     $body.replaceChildren(
       $form,
       card('所要時間の予測', region('estimate', 'mt-2')),
       card('実行',
         region('worker', 'mt-2 text-sm'),
-        h('div', { class: 'mt-3 flex flex-wrap items-center gap-3' }, $run, $runMessage)),
+        h('div', { class: 'mt-3 flex flex-wrap items-center gap-3' }, $run, $quick, $runMessage)),
       card('実行状況', region('current', 'mt-2')),
       card('履歴 (直近 5 件)', region('history', 'mt-2')));
 
@@ -180,9 +190,11 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
   const $categoryBoxes = () => [...$body.querySelectorAll('[data-field="categories"]')];
 
   function writeForm(form) {
-    for (const name of ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'reach_slack']) $field(name).value = form[name];
+    for (const name of ['purchase_date', 'min_buyback', 'max_buyback', 'min_profit', 'reach_slack', 'limit']) $field(name).value = form[name] ?? '';
     $field('deadline').value = form.deadline_time;
     for (const $radio of $body.querySelectorAll('[data-field="page_scope"]')) $radio.checked = $radio.value === form.page_scope;
+    const select = form.select === 'rising' ? 'rising' : 'all';
+    for (const $radio of $body.querySelectorAll('[data-field="select"]')) $radio.checked = $radio.value === select;
     setCategories(Array.isArray(form.categories) ? form.categories : []);
     syncScope();
   }
@@ -198,7 +210,16 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       min_profit: value('min_profit'), reach_slack: value('reach_slack'), deadline_time: value('deadline'),
       page_scope: $body.querySelector('[data-field="page_scope"]:checked')?.value ?? '',
       categories: $categoryBoxes().filter(($box) => $box.checked).map(($box) => $box.value),
+      select: $body.querySelector('[data-field="select"]:checked')?.value ?? 'all',
+      limit: value('limit'),
     };
+  }
+
+  /** クイックを選んで件数が空なら、約 QUICK_MINUTES 分に収まる件数を入れる */
+  function fillQuickLimit() {
+    const form = readForm();
+    if (form.select !== 'rising' || str(form.limit).trim() !== '') return;
+    $field('limit').value = String(quickLimit(state.worker?.rates, form.page_scope));
   }
 
   /** 各分類のラベル横に JAN 数 (買取金額の範囲を反映) を出す。by_group が無い待ち受けなら案内を出す */
@@ -277,7 +298,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     const estimate = estimateDuration({
       histogram: state.worker?.buyback_histogram, rates: state.worker?.rates,
       minBuyback: valid(params.min_buyback), maxBuyback: valid(params.max_buyback), pageScope: params.page_scope,
-      categories: params.categories,
+      categories: params.categories, limit: params.limit,
     });
     return { estimate, deadline: params.deadline, params };
   }
@@ -328,7 +349,8 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     }
     const asOf = formatDateTime(state.worker?.buyback_histogram?.as_of);
     const filtered = params.categories !== null;
-    const jansSub = !filtered ? null : (estimate.categoriesApplied ? '選んだ分類のみ' : '全分類の件数 (分類ごとの件数は待ち受けを起動し直すと出ます)');
+    const jansSub = params.select === 'rising' ? '値上がりした JAN が上限より少なければ、その分だけ'
+      : !filtered ? null : (estimate.categoriesApplied ? '選んだ分類のみ' : '全分類の件数 (分類ごとの件数は待ち受けを起動し直すと出ます)');
     mount(ui.estimate, 
       h('div', { class: 'grid gap-3 grid-cols-2 lg:grid-cols-5' },
         stat('対象 JAN 数', `約 ${num(Math.round(estimate.jans))} 件`, jansSub),
@@ -683,6 +705,7 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
     const name = e.target.dataset?.field;
     if (!name || !state.loaded) return;
     if (name === 'page_scope') syncScope();
+    if (name === 'select') fillQuickLimit();
     if (name === 'purchase_date') renderActive();
     renderEstimate();
   });
@@ -704,6 +727,13 @@ export function createResearch({ supabase, $root, onEditSettings, onShowResults,
       setCategories(action === 'categories-all' ? [...CATEGORY_GROUPS] : []);
       renderEstimate();
     } else if (action === 'run') {
+      run();
+    } else if (action === 'quick') {
+      // 条件はそのまま、選び方をクイックにして件数を約 QUICK_MINUTES 分に合わせてから依頼する
+      for (const $radio of $body.querySelectorAll('[data-field="select"]')) $radio.checked = $radio.value === 'rising';
+      $field('limit').value = '';
+      fillQuickLimit();
+      renderEstimate();
       run();
     } else if (action === 'cancel') {
       cancel(Number($btn.dataset.id));

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 1000
 LOOKBACK_DAYS = 7
+PREV_DAYS = 7           # 「値上がり」の比較に使う、何日前の価格か (その日以前の最新価格と比べる)
 SOURCES = ("kaitorishouten", "rudeya", "kaitoriwiki")
 # kaitoriwiki は新品の買取価格だけを扱う。過去行は condition='used' で保存されていたので、
 # DB の修正前でも拾えるよう source で新品扱いにする
@@ -31,6 +32,13 @@ class Buyback:
     scraped_date: str
     # 大分類 (categories.GROUPS)。古い run の buyback.json には無いので None になりうる
     category: str | None = None
+    # PREV_DAYS 日前時点の最高値 (値上がり順の選択用。with_prev=True で読んだときだけ入る。無い = 比較できない)
+    prev_price: int | None = None
+
+    @property
+    def rise(self) -> int | None:
+        """PREV_DAYS 日前からの値上がり幅 (円)。比較できなければ None"""
+        return None if self.prev_price is None else self.price - self.prev_price
 
 
 def read_credentials() -> tuple[str, str]:
@@ -74,30 +82,46 @@ def load_categories(url: str, key: str) -> dict[str, str]:
             for row in _fetch_all(url, key, "products", params)}
 
 
-def load_buyback_prices(today: date, lookback_days: int = LOOKBACK_DAYS) -> dict[str, Buyback]:
-    """直近 lookback_days 日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値を返す (大分類つき)"""
+def load_buyback_prices(today: date, lookback_days: int = LOOKBACK_DAYS, with_prev: bool = False,
+                        prev_days: int = PREV_DAYS) -> dict[str, Buyback]:
+    """直近 lookback_days 日の新品価格から、JAN ごとに「各買取店の最新価格」の最高値を返す (大分類つき)。
+
+    with_prev なら prev_days 日前以前の最新価格 (さらに lookback_days 日さかのぼる) も同じ方法で集め、
+    prev_price に入れる (値上がり順の選択に使う)。
+    """
     url, key = read_credentials()
-    since = (today - timedelta(days=lookback_days)).isoformat()
+    since = today - timedelta(days=lookback_days)
+    prev_cutoff = today - timedelta(days=prev_days)
+    fetch_since = prev_cutoff - timedelta(days=lookback_days) if with_prev else since
     params = {
         "select": "jan_code,source,condition,scraped_date,price",
-        "scraped_date": f"gte.{since}",
+        "scraped_date": f"gte.{fetch_since.isoformat()}",
         "price": "gt.0",
         # ページ送りが安定するよう主キー順
         "order": "jan_code,source,condition,scraped_date",
     }
 
     latest: dict[tuple[str, str], dict] = {}   # (jan, source) → 最新の新品行
+    prev: dict[tuple[str, str], dict] = {}     # (jan, source) → prev_cutoff 以前の最新の新品行
+    since_iso, cutoff_iso = since.isoformat(), prev_cutoff.isoformat()
     for row in _fetch_all(url, key, "price_history", params):
         if row["source"] not in SOURCES or not _is_new(row):
             continue
         k = (row["jan_code"], row["source"])
-        if k not in latest or row["scraped_date"] > latest[k]["scraped_date"]:
+        if row["scraped_date"] >= since_iso and (k not in latest or row["scraped_date"] > latest[k]["scraped_date"]):
             latest[k] = row
+        if with_prev and row["scraped_date"] <= cutoff_iso and (k not in prev or row["scraped_date"] > prev[k]["scraped_date"]):
+            prev[k] = row
 
+    prev_best: dict[str, int] = {}
+    for (jan, _source), row in prev.items():
+        prev_best[jan] = max(prev_best.get(jan, 0), row["price"])
     groups = load_categories(url, key)
     best: dict[str, Buyback] = {}
     for (jan, source), row in latest.items():
         if jan not in best or row["price"] > best[jan].price:
-            best[jan] = Buyback(jan, row["price"], source, row["scraped_date"], groups.get(jan, GROUP_OTHER))
-    logger.info("buyback prices: %d JANs (since %s, %d source rows)", len(best), since, len(latest))
+            best[jan] = Buyback(jan, row["price"], source, row["scraped_date"], groups.get(jan, GROUP_OTHER),
+                                prev_best.get(jan) if with_prev else None)
+    logger.info("buyback prices: %d JANs (since %s, %d source rows%s)", len(best), since_iso, len(latest),
+                f", {prev_days} 日前の価格あり {sum(b.prev_price is not None for b in best.values())}" if with_prev else "")
     return best
